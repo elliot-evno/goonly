@@ -4,14 +4,8 @@ import { env } from "../env";
 
 const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY || "");
 
-
 interface ConversationRequest {
   topic: string;
-}
-
-interface ConversationTurn {
-  stewie: string;
-  peter: string;
 }
 
 export async function POST(request: Request) {
@@ -35,16 +29,13 @@ export async function POST(request: Request) {
     `;
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-    
     const result = await model.generateContent(prompt);
     const response = await result.response;
     let text = response.text();
     
-    // Clean up the response text by removing markdown code blocks if present
     text = text.replace(/```json\n/g, '').replace(/```/g, '').trim();
     
     try {
-      // Parse the response to ensure it's valid JSON
       const conversation = JSON.parse(text);
       return NextResponse.json(conversation);
     } catch (jsonError) {
