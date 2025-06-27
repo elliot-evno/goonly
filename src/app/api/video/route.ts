@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import fs from 'fs';
+import { spawn } from 'child_process';
 
 interface AudioPartMeta {
   index: number;
@@ -14,6 +15,179 @@ interface AudioPartMeta {
 interface VideoMetadata {
   totalDuration: number;
   parts: AudioPartMeta[];
+}
+
+interface WhisperWord {
+  word: string;
+  start: number;
+  end: number;
+  confidence: number;
+}
+
+// Function to get accurate word-level timestamps using Whisper
+async function getWordTimestamps(audioPath: string): Promise<WhisperWord[]> {
+  return new Promise((resolve, reject) => {
+    console.log(`Getting word timestamps for: ${audioPath}`);
+    
+    // Use whisper.cpp with word-level timestamps
+    // Download whisper.cpp if not present
+    const whisperCommand = 'whisper';
+    
+    const args = [
+      audioPath,
+      '--model', 'base',  // Use base model for speed (you can use 'small' or 'medium' for better accuracy)
+      '--output_format', 'json',
+      '--word_timestamps', 'true',
+      '--output_dir', path.dirname(audioPath)
+    ];
+    
+    console.log(`Running: ${whisperCommand} ${args.join(' ')}`);
+    
+    const whisperProcess = spawn(whisperCommand, args, { stdio: 'pipe' });
+    
+    let stdout = '';
+    let stderr = '';
+    
+    whisperProcess.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    whisperProcess.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    whisperProcess.on('close', (code) => {
+      if (code !== 0) {
+        console.error(`Whisper failed with code ${code}`);
+        console.error('stderr:', stderr);
+        reject(new Error(`Whisper failed: ${stderr}`));
+        return;
+      }
+      
+      try {
+        // Read the generated JSON file
+        const jsonPath = audioPath.replace('.wav', '.json');
+        
+        if (!fs.existsSync(jsonPath)) {
+          throw new Error(`Whisper output file not found: ${jsonPath}`);
+        }
+        
+        const whisperResult = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        console.log('Whisper result structure:', Object.keys(whisperResult));
+        
+        // Extract word-level timestamps
+        const words: WhisperWord[] = [];
+        
+        if (whisperResult.segments) {
+          whisperResult.segments.forEach((segment: any) => {
+            if (segment.words) {
+              segment.words.forEach((word: any) => {
+                words.push({
+                  word: word.word.trim(),
+                  start: word.start,
+                  end: word.end,
+                  confidence: word.confidence || 1.0
+                });
+              });
+            }
+          });
+        }
+        
+        console.log(`Extracted ${words.length} words with timestamps`);
+        
+        // Cleanup JSON file
+        fs.unlinkSync(jsonPath);
+        
+        resolve(words);
+      } catch (error) {
+        console.error('Failed to parse Whisper output:', error);
+        reject(error);
+      }
+    });
+    
+    whisperProcess.on('error', (error) => {
+      console.error('Failed to spawn Whisper process:', error);
+      
+      // Fallback: Use python whisper if whisper.cpp not available
+      tryPythonWhisper(audioPath).then(resolve).catch(reject);
+    });
+  });
+}
+
+// Fallback function using Python Whisper
+async function tryPythonWhisper(audioPath: string): Promise<WhisperWord[]> {
+  return new Promise((resolve, reject) => {
+    console.log('Trying Python Whisper as fallback...');
+    
+    // Create a temporary Python script
+    const pythonScript = `
+import whisper
+import json
+import sys
+
+try:
+    model = whisper.load_model("base")
+    result = model.transcribe("${audioPath}", word_timestamps=True)
+    
+    words = []
+    for segment in result["segments"]:
+        if "words" in segment:
+            for word in segment["words"]:
+                words.append({
+                    "word": word["word"].strip(),
+                    "start": word["start"],
+                    "end": word["end"],
+                    "confidence": getattr(word, "confidence", 1.0)
+                })
+    
+    print(json.dumps(words))
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+    sys.exit(1)
+`;
+    
+    const scriptPath = path.join(path.dirname(audioPath), 'whisper_script.py');
+    fs.writeFileSync(scriptPath, pythonScript);
+    
+    const pythonProcess = spawn('python3', [scriptPath], { stdio: 'pipe' });
+    
+    let stdout = '';
+    let stderr = '';
+    
+    pythonProcess.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    pythonProcess.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    pythonProcess.on('close', (code) => {
+      // Cleanup script
+      fs.unlinkSync(scriptPath);
+      
+      if (code !== 0) {
+        console.error('Python Whisper failed:', stderr);
+        reject(new Error(`Python Whisper failed: ${stderr}`));
+        return;
+      }
+      
+      try {
+        const words = JSON.parse(stdout);
+        console.log(`Python Whisper extracted ${words.length} words`);
+        resolve(words);
+      } catch (error) {
+        console.error('Failed to parse Python Whisper output:', error);
+        reject(error);
+      }
+    });
+    
+    pythonProcess.on('error', (error) => {
+      fs.unlinkSync(scriptPath);
+      console.error('Failed to spawn Python process:', error);
+      reject(error);
+    });
+  });
 }
 
 export async function POST(request: Request) {
@@ -140,13 +314,15 @@ export async function POST(request: Request) {
         .run();
     });
 
-    // Step 2: Create video with character overlays - SEQUENTIAL timeline
-    // Calculate timeline exactly like frontend preview: sequential with small gaps
+    // Step 2: Get accurate word-level timestamps using Whisper
+    console.log('Getting accurate word timestamps using Whisper...');
     const sequentialTimeline = [];
+    const wordTimeline = [];
     let currentTime = 0;
     
     for (let i = 0; i < sortedAudioFiles.length; i++) {
       const audio = sortedAudioFiles[i];
+      const audioMetadata = metadata.parts.find(p => p.index === i);
       
       // Character appears for the duration of their audio
       sequentialTimeline.push({
@@ -154,6 +330,69 @@ export async function POST(request: Request) {
         startTime: currentTime,
         endTime: currentTime + audio.duration
       });
+      
+      // Get REAL word-level timing using Whisper
+      if (audioMetadata) {
+        try {
+          console.log(`Analyzing audio ${i} with Whisper: ${audio.character}`);
+          const whisperWords = await getWordTimestamps(audio.fileName);
+          
+          if (whisperWords.length > 0) {
+            console.log(`Whisper found ${whisperWords.length} words for ${audio.character}`);
+            
+            // Map Whisper timestamps to global timeline
+            whisperWords.forEach((whisperWord) => {
+              // Only include words with reasonable confidence
+              if (whisperWord.confidence > 0.5) {
+                wordTimeline.push({
+                  text: whisperWord.word,
+                  startTime: currentTime + whisperWord.start,
+                  endTime: currentTime + whisperWord.end,
+                  character: audio.character,
+                  confidence: whisperWord.confidence
+                });
+              }
+            });
+          } else {
+            console.log(`No words found by Whisper for ${audio.character}, using fallback`);
+            // Fallback to simple timing if Whisper fails
+            const words = audioMetadata.text.split(' ').filter(word => word.trim() !== '');
+            const wordsPerSecond = words.length / audio.duration;
+            
+            for (let wordIndex = 0; wordIndex < words.length; wordIndex++) {
+              const wordStartTime = currentTime + (wordIndex / wordsPerSecond);
+              const wordEndTime = currentTime + ((wordIndex + 1) / wordsPerSecond);
+              
+              wordTimeline.push({
+                text: words[wordIndex],
+                startTime: wordStartTime,
+                endTime: wordEndTime,
+                character: audio.character,
+                confidence: 0.5
+              });
+            }
+          }
+        } catch (error) {
+          console.error(`Whisper failed for audio ${i}:`, error);
+          
+          // Fallback to simple timing calculation
+          const words = audioMetadata.text.split(' ').filter(word => word.trim() !== '');
+          const wordsPerSecond = words.length / audio.duration;
+          
+          for (let wordIndex = 0; wordIndex < words.length; wordIndex++) {
+            const wordStartTime = currentTime + (wordIndex / wordsPerSecond);
+            const wordEndTime = currentTime + ((wordIndex + 1) / wordsPerSecond);
+            
+            wordTimeline.push({
+              text: words[wordIndex],
+              startTime: wordStartTime,
+              endTime: wordEndTime,
+              character: audio.character,
+              confidence: 0.3 // Low confidence for fallback
+            });
+          }
+        }
+      }
       
       // Move to next time slot (audio duration + gap)
       currentTime += audio.duration;
@@ -163,28 +402,49 @@ export async function POST(request: Request) {
     }
     
     console.log('Sequential timing (like preview):', sequentialTimeline.map(t => `${t.character}: ${t.startTime}s-${t.endTime}s`));
+    console.log('Whisper word timing:', wordTimeline.slice(0, 10).map(w => `"${w.text}": ${w.startTime.toFixed(2)}s-${w.endTime.toFixed(2)}s (conf: ${w.confidence?.toFixed(2) || 'N/A'})`));
     
     const videoFilterComplex = [];
     
-    // Scale character images
-    videoFilterComplex.push('[1:v]scale=500:500[stewie_img]');
-    videoFilterComplex.push('[2:v]scale=500:500,hflip[peter_img]');
+    // Scale character images - Stewie smaller on right, Peter larger on left
+    videoFilterComplex.push('[1:v]scale=400:400[stewie_img]');  // Stewie smaller
+    videoFilterComplex.push('[2:v]scale=600:600,hflip[peter_img]');  // Peter larger (full width)
     
-    // Create overlays for each character using SEQUENTIAL timeline (like preview)
+    // Create overlays for each character using SEQUENTIAL timeline (repositioned)
     let videoBase = '0:v';
     for (let i = 0; i < sequentialTimeline.length; i++) {
       const timing = sequentialTimeline[i];
-      const nextBase = `video${i}`;
+      const nextBase = `character${i}`;
       
       if (timing.character === 'stewie') {
+        // Stewie on the RIGHT side
         videoFilterComplex.push(
-          `[${videoBase}][stewie_img]overlay=(W-w)/2:(H-h)/2:enable='between(t,${timing.startTime},${timing.endTime})'[${nextBase}]`
+          `[${videoBase}][stewie_img]overlay=W-w-50:(H-h)/2:enable='between(t,${timing.startTime},${timing.endTime})'[${nextBase}]`
         );
       } else {
+        // Peter on the LEFT side
         videoFilterComplex.push(
-          `[${videoBase}][peter_img]overlay=(W-w)/2:(H-h)/2:enable='between(t,${timing.startTime},${timing.endTime})'[${nextBase}]`
+          `[${videoBase}][peter_img]overlay=50:(H-h)/2:enable='between(t,${timing.startTime},${timing.endTime})'[${nextBase}]`
         );
       }
+      videoBase = nextBase;
+    }
+    
+    // Add word-by-word text overlays in the CENTER
+    for (let i = 0; i < wordTimeline.length; i++) {
+      const word = wordTimeline[i];
+      const nextBase = `text${i}`;
+      
+      // Escape special characters in text for FFmpeg
+      const escapedText = word.text.replace(/['"\\:]/g, '\\$&').replace(/,/g, '\\,');
+      
+      // Different colors for different characters
+      const textColor = word.character === 'stewie' ? 'blue' : 'red';
+      
+      videoFilterComplex.push(
+        `[${videoBase}]drawtext=text='${escapedText}':fontsize=60:fontcolor=${textColor}:x=(w-text_w)/2:y=h*0.8:enable='between(t,${word.startTime},${word.endTime})'[${nextBase}]`
+      );
+      
       videoBase = nextBase;
     }
 
