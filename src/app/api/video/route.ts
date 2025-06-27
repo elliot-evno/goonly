@@ -1,209 +1,16 @@
 import { NextResponse } from "next/server";
-import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import fs from 'fs';
-
-interface ConversationTurn {
-  stewie: string;
-  peter: string;
-}
-
-interface AudioResult {
-  buffer: Buffer;
-  duration: number;
-  character: 'stewie' | 'peter';
-  text: string;
-}
-
-interface AudioFileData {
-  fileName: string;
-  character: 'stewie' | 'peter';
-  text: string;
-  duration: number;
-  startTime: number;
-}
-
-interface WordTiming {
-  text: string;
-  startTime: number;
-  endTime: number;
-  character: 'stewie' | 'peter';
-}
-
-// Generate audio using RVC API (optimized with proper error handling)
-async function generateAudio(text: string, character: 'stewie' | 'peter', retries: number = 3): Promise<AudioResult> {
-  console.log(`🎤 Generating audio for ${character}: "${text.substring(0, 30)}..."`);
-  
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const formData = new FormData();
-      formData.append('text', text);
-      formData.append('character', character);
-      
-      // Use AbortController with longer timeout for TTS
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes
-      
-      const response = await fetch('http://localhost:8000/tts/', {
-        method: 'POST',
-        body: formData,
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        throw new Error(`Audio generation failed for ${character}: ${response.status} ${response.statusText}`);
-      }
-      
-      const audioBuffer = Buffer.from(await response.arrayBuffer());
-      
-      if (audioBuffer.length === 0) {
-        throw new Error(`Empty audio buffer received for ${character}`);
-      }
-      
-      // Get actual duration using ffprobe
-      const tempPath = path.join(process.cwd(), 'temp', `temp_${Date.now()}_${Math.random()}.wav`);
-      await fs.promises.writeFile(tempPath, audioBuffer);
-      
-      const duration = await new Promise<number>((resolve, reject) => {
-        ffmpeg.ffprobe(tempPath, (err: any, metadata: any) => {
-          if (err) {
-            console.warn(`⚠️ Failed to get duration for ${character}, using fallback:`, err.message);
-            resolve(3.0); // Fallback duration
-          } else {
-            const actualDuration = metadata.format.duration || 3.0;
-            console.log(`✅ ${character}: ${actualDuration.toFixed(1)}s`);
-            resolve(actualDuration);
-          }
-        });
-      });
-      
-      // Cleanup temp file
-      await fs.promises.unlink(tempPath).catch(() => {});
-      
-      return { 
-        buffer: audioBuffer, 
-        duration, 
-        character, 
-        text 
-      };
-      
-    } catch (error) {
-      console.warn(`⚠️ Attempt ${attempt + 1} failed for ${character}:`, error);
-      
-      if (attempt === retries) {
-        if (error instanceof Error && error.name === 'AbortError') {
-          throw new Error(`TTS timeout: ${character} speech generation took longer than 2 minutes`);
-        }
-        throw new Error(`Failed to generate ${character} speech after ${retries + 1} attempts: ${error}`);
-      }
-      
-      // Wait before retrying with exponential backoff
-      const waitTime = Math.pow(2, attempt + 1) * 1000;
-      console.log(`⏳ Waiting ${waitTime/1000}s before retry...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-    }
-  }
-  
-  throw new Error(`Failed to generate ${character} speech`);
-}
-
-// Production-ready word timing using Whisper forced alignment
-async function getWhisperWordTimings(audioPath: string, text: string): Promise<Array<{word: string, start: number, end: number}>> {
-  try {
-    console.log(`🎯 Getting precise word timings for: "${text.substring(0, 50)}..."`);
-    
-    const formData = new FormData();
-    const audioBuffer = await fs.promises.readFile(audioPath);
-    const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' });
-    
-    formData.append('audio', audioBlob, 'audio.wav');
-    formData.append('text', text);
-    formData.append('word_timestamps', 'true');
-    
-    const response = await fetch('http://localhost:8000/whisper-align/', {
-      method: 'POST',
-      body: formData,
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Whisper alignment failed: ${response.status}`);
-    }
-    
-    const result = await response.json();
-    
-    if (result.word_segments && result.word_segments.length > 0) {
-      console.log(`✅ Got ${result.word_segments.length} precise word timings`);
-      return result.word_segments.map((segment: any) => ({
-        word: segment.word.trim(),
-        start: segment.start,
-        end: segment.end
-      }));
-    } else {
-      throw new Error('No word segments returned from Whisper');
-    }
-    
-  } catch (error) {
-    console.warn(`⚠️ Whisper alignment failed, falling back to estimated timing:`, error);
-    // We don't have duration here, so we'll need to estimate from the audio file
-    const audioBuffer = await fs.promises.readFile(audioPath);
-    const tempPath = path.join(process.cwd(), 'temp', `temp_timing_${Date.now()}.wav`);
-    await fs.promises.writeFile(tempPath, audioBuffer);
-    
-    const duration = await new Promise<number>((resolve) => {
-      require('fluent-ffmpeg').ffprobe(tempPath, (err: any, metadata: any) => {
-        if (err) resolve(3.0); // Fallback duration
-        else resolve(metadata.format.duration || 3.0);
-      });
-    });
-    
-    await fs.promises.unlink(tempPath).catch(() => {});
-    return estimateWordTiming(text, duration);
-  }
-}
-
-// Improved fallback word timing estimation (better than simple division)
-function estimateWordTiming(text: string, duration: number): Array<{word: string, start: number, end: number}> {
-  const words = text.split(' ').filter(word => word.trim() !== '');
-  
-  // Estimate relative durations based on word characteristics
-  const wordDurations = words.map(word => {
-    let baseDuration = 0.3; // Base duration per word
-    
-    // Longer words take more time
-    baseDuration += word.length * 0.05;
-    
-    // Add time for punctuation (pauses)
-    if (word.match(/[.!?]$/)) baseDuration += 0.3;
-    else if (word.match(/[,;:]$/)) baseDuration += 0.15;
-    
-    // Syllable estimation (rough)
-    const vowelMatches = word.match(/[aeiouAEIOU]/g);
-    const syllables = vowelMatches ? Math.max(1, vowelMatches.length) : 1;
-    baseDuration += syllables * 0.1;
-    
-    return baseDuration;
-  });
-  
-  // Scale to fit actual duration
-  const totalEstimated = wordDurations.reduce((sum, dur) => sum + dur, 0);
-  const scaleFactor = duration / totalEstimated;
-  
-  let currentTime = 0;
-  return words.map((word, index) => {
-    const scaledDuration = wordDurations[index] * scaleFactor;
-    const result = {
-      word: word,
-      start: currentTime,
-      end: currentTime + scaledDuration
-    };
-    currentTime += scaledDuration;
-    return result;
-  });
-}
-
-
+import { 
+  ConversationTurn, 
+  AudioResult, 
+  AudioFileData, 
+  WordTiming, 
+  CharacterTimeline 
+} from './types';
+import { generateAudio, getWhisperWordTimings, combineAudioFiles, estimateWordTiming } from './services/audio';
+import { createSubtitleFile } from './services/subtitle';
+import { createFinalVideo } from './services/video';
 
 export async function POST(request: Request) {
   const startTime = Date.now();
@@ -308,7 +115,7 @@ export async function POST(request: Request) {
       }
       
       // Adjust timings to global timeline and add to word timeline
-      wordTimings.forEach(wordTiming => {
+      wordTimings.forEach((wordTiming: { word: string; start: number; end: number; }) => {
         if (wordTiming.word.trim()) { // Skip empty words
           wordTimeline.push({
             text: wordTiming.word,
@@ -328,7 +135,6 @@ export async function POST(request: Request) {
 
     // File paths
     const outputPath = path.join(tempDir, 'output.mp4');
-    const combinedAudioPath = path.join(tempDir, 'combined_audio.wav');
     
     const videoPath = path.join(process.cwd(), 'public', 'content', 'subwaysurfers.mp4');
     const stewieImagePath = path.join(process.cwd(), 'public', 'content', 'stewie.png');
@@ -341,156 +147,25 @@ export async function POST(request: Request) {
 
     // Step 1: Create combined audio
     console.log('🎶 Combining audio tracks...');
-    const audioInputs = [];
-    const filterParts = [];
-    
-    for (let i = 0; i < audioFiles.length; i++) {
-      audioInputs.push(`[${i}:a]`);
-      
-      if (i < audioFiles.length - 1) {
-        filterParts.push(`anullsrc=duration=${GAP_DURATION}:sample_rate=44100:channel_layout=stereo[gap${i}]`);
-        audioInputs.push(`[gap${i}]`);
-      }
-    }
-    
-    const audioFilterComplex = [
-      ...filterParts,
-      `${audioInputs.join('')}concat=n=${audioInputs.length}:v=0:a=1[out]`
-    ].join(';');
-
-    await new Promise((resolve, reject) => {
-      const command = ffmpeg();
-      
-      audioFiles.forEach(audio => {
-        command.input(audio.fileName);
-      });
-      
-      command
-        .complexFilter(audioFilterComplex)
-        .outputOptions(['-map', '[out]', '-c:a', 'pcm_s16le'])
-        .output(combinedAudioPath)
-        .on('end', resolve)
-        .on('error', reject)
-        .run();
-    });
+    const combinedAudioPath = await combineAudioFiles(audioFiles, tempDir);
 
     // Step 3: Create efficient ASS subtitles for word-by-word display (avoids FFmpeg filter limits)
     console.log('📝 Creating word-by-word subtitles...');
-    const subtitlePath = path.join(tempDir, 'subtitles.ass');
-    
-    // Create ASS header with bigger, bolder styling like social media word displays
-    const assHeader = `[Script Info]
-Title: Peter and Stewie Conversation
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Stewie,Arial Black,140,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,8,3,5,50,50,0,1
-Style: Peter,Arial Black,140,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,8,3,5,50,50,0,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-`;
-    
-    // Helper function to format time for ASS subtitles (h:mm:ss.cc)
-    function formatAssTime(seconds: number): string {
-      const hours = Math.floor(seconds / 3600);
-      const minutes = Math.floor((seconds % 3600) / 60);
-      const secs = Math.floor(seconds % 60);
-      const centiseconds = Math.floor((seconds % 1) * 100);
-      
-      return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
-    }
-
-    // Convert word timeline to ASS events for word-by-word display
-    const assEvents = wordTimeline.map((word) => {
-      const startTime = formatAssTime(word.startTime);
-      const endTime = formatAssTime(word.endTime);
-      const style = word.character === 'stewie' ? 'Stewie' : 'Peter';
-      const text = word.text.replace(/\\/g, '\\\\').replace(/\{/g, '\\{').replace(/\}/g, '\\}');
-      
-      return `Dialogue: 0,${startTime},${endTime},${style},,0,0,0,,${text}`;
-    }).join('\n');
-    
-    const assContent = assHeader + assEvents;
-    await fs.promises.writeFile(subtitlePath, assContent);
+    const subtitlePath = await createSubtitleFile(wordTimeline, tempDir);
     console.log(`Created subtitle file with ${wordTimeline.length} word-by-word entries`);
 
     // Step 4: Create simplified video filter (characters + subtitles, NO hundreds of drawtext overlays)
-    const videoFilterComplex: string[] = [];
-    
-    // Scale character images preserving aspect ratio (no squeezing) - made bigger
-    // Stewie: 1280x1024 -> scale to height 700, width will be ~875 (preserves 1.25:1 ratio)
-    videoFilterComplex.push('[1:v]scale=-1:700[stewie_img]');  
-    // Peter: 1680x1050 -> scale to height 700, width will be ~1120 (preserves 1.6:1 ratio), no flip so he faces left
-    videoFilterComplex.push('[2:v]scale=-1:700[peter_img]');
-    
-    // Create a single combined overlay showing characters at the right times
-    // Build enable expressions for each character
-    const stewieEnable = characterTimeline
-      .filter(c => c.character === 'stewie')
-      .map(c => `between(t,${c.startTime},${c.endTime})`)
-      .join('+');
-    
-    const peterEnable = characterTimeline
-      .filter(c => c.character === 'peter')
-      .map(c => `between(t,${c.startTime},${c.endTime})`)
-      .join('+');
-    
-    // Single overlay for Stewie (moved way more left to fit in bounds) 
-    videoFilterComplex.push(
-      `[0:v][stewie_img]overlay=200:H-h-30:enable='${stewieEnable}'[with_stewie]`
+    console.log('🎥 Creating final video...');
+    await createFinalVideo(
+      videoPath,
+      stewieImagePath,
+      peterImagePath,
+      combinedAudioPath,
+      subtitlePath,
+      characterTimeline,
+      totalDuration,
+      outputPath
     );
-    
-    // Single overlay for Peter (moved a little bit more left, bottom, facing left naturally)
-    videoFilterComplex.push(
-      `[with_stewie][peter_img]overlay=-300:H-h-30:enable='${peterEnable}'[with_characters]`
-    );
-    
-    // Add word-by-word subtitles (MUCH more efficient than hundreds of drawtext filters)
-    const escapedSubtitlePath = subtitlePath.replace(/\\/g, '/').replace(/:/g, '\\:');
-    videoFilterComplex.push(`[with_characters]subtitles='${escapedSubtitlePath}'[final]`);
-
-    console.log('Efficient video filter (characters + ASS subtitles):', videoFilterComplex.join(';'));
-
-    // Calculate total duration using the correct timeline
-    const totalSequentialDuration = totalDuration;
-
-    // Combine video with audio (single video input, no duplicates)
-    await new Promise((resolve, reject) => {
-      ffmpeg()
-        .input(videoPath)  // Single subway surfers video input
-        .inputOptions(['-t', totalSequentialDuration.toString()])
-        .input(stewieImagePath)  // Character images
-        .input(peterImagePath)
-        .input(combinedAudioPath)  // Combined audio
-        .complexFilter(videoFilterComplex.join(';'))
-        .outputOptions([
-          '-map', '[final]',  // Use final video with character overlays and word-by-word subtitles
-          '-map', '3:a',      // Use combined audio
-          '-c:v', 'libx264',
-          '-c:a', 'aac',
-          '-s', '1080x1920',  // Vertical video format
-          '-r', '30',
-          '-shortest',
-          '-y'
-        ])
-        .output(outputPath)
-        .on('start', (cmd: string) => {
-          console.log('Starting FFmpeg command:', cmd);
-        })
-        .on('end', () => {
-          console.log('FFmpeg processing finished');
-          resolve(null);
-        })
-        .on('error', (err: any) => {
-          console.error('FFmpeg error:', err);
-          reject(err);
-        })
-        .run();
-    });
 
     // Check if output file was created
     if (!fs.existsSync(outputPath)) {

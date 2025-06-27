@@ -9,11 +9,13 @@ from scipy.io import wavfile
 import requests
 import logging
 import uuid
+from dotenv import load_dotenv
 
 # Import your RVC inference logic:
 from infer.modules.vc.modules import VC
 from configs.config import Config
 
+load_dotenv()
 
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")

@@ -50,3 +50,4 @@ torchaudio==2.1.0
 torchvision==0.16.0
 openai==1.68.1
 edge_tts==7.0.2
+dotenv==0.9.9

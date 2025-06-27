@@ -79,4 +79,5 @@ echo "🚨 IMPORTANT: The virtual environment is only active during this script.
 echo "🚀 Starting API server..."
 echo "Press Ctrl+C to stop the server"
 echo ""
+export PYTORCH_ENABLE_MPS_FALLBACK=1
 exec python -m uvicorn api:app --reload
