@@ -37,7 +37,7 @@ export async function POST(request: Request) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
-    // Save all audio files from FormData
+    // Save all audio files from FormData and get ACTUAL durations
     const audioFiles = await Promise.all(
       metadata.parts.map(async (part) => {
         console.log(`Processing audio ${part.index}:`, part.character, part.startTime);
@@ -51,10 +51,24 @@ export async function POST(request: Request) {
         const buffer = Buffer.from(await audioFile.arrayBuffer());
         await fs.promises.writeFile(fileName, buffer);
         
+        // Get ACTUAL duration of the audio file using ffprobe
+        const actualDuration = await new Promise<number>((resolve, reject) => {
+          ffmpeg.ffprobe(fileName, (err, metadata) => {
+            if (err) {
+              console.error(`Failed to get duration for ${fileName}:`, err);
+              resolve(part.duration); // Fallback to metadata duration
+            } else {
+              const duration = metadata.format.duration || part.duration;
+              console.log(`Actual duration for ${part.character}: ${duration}s (metadata said ${part.duration}s)`);
+              resolve(duration);
+            }
+          });
+        });
+        
         return { 
           fileName, 
           startTime: part.startTime, 
-          duration: part.duration,
+          duration: actualDuration,  // Use ACTUAL duration instead of metadata
           character: part.character 
         };
       })
@@ -77,105 +91,129 @@ export async function POST(request: Request) {
       throw new Error(`Peter image not found: ${peterImagePath}`);
     }
 
-    // Build simplified filter complex
-    const filters = [];
-    
-    // Initialize base video stream
-    filters.push('[0:v]copy[base0]');
-    
-    // Scale images once
-    filters.push('[1:v]scale=300:300[stewie_img]');
-    filters.push('[2:v]scale=300:300,hflip[peter_img]');
-    
-    // Create overlays for each character speaking
-    let currentBase = 'base0';
-    for (let i = 0; i < audioFiles.length; i++) {
-      const audio = audioFiles[i];
-      const endTime = audio.startTime + audio.duration;
-      const nextBase = `base${i + 1}`;
-      
-      if (audio.character === 'stewie') {
-        filters.push(
-          `[${currentBase}][stewie_img]overlay=(W-w)/2:(H-h)/2:enable='between(t,${audio.startTime},${endTime})'[${nextBase}]`
-        );
-      } else {
-        filters.push(
-          `[${currentBase}][peter_img]overlay=(W-w)/2:(H-h)/2:enable='between(t,${audio.startTime},${endTime})'[${nextBase}]`
-        );
-      }
-      currentBase = nextBase;
-    }
-    
-    // Create audio timeline that matches the preview exactly
-    // Instead of mixing parallel streams, create a sequential timeline
-    let audioFilterChain = '';
-    
-    if (audioFiles.length > 0) {
-      // Start with silence for the duration of the first audio's start time
-      if (audioFiles[0].startTime > 0) {
-        audioFilterChain = `anullsrc=channel_layout=stereo:sample_rate=48000:duration=${audioFiles[0].startTime}[silence_start];`;
-        audioFilterChain += `[silence_start][${3}:a]concat=n=2:v=0:a=1[audio_0];`;
-      } else {
-        audioFilterChain = `[${3}:a]acopy[audio_0];`;
-      }
-      
-      // Add each subsequent audio with gap timing
-      for (let i = 1; i < audioFiles.length; i++) {
-        const prevAudio = audioFiles[i - 1];
-        const currentAudio = audioFiles[i];
-        const prevEndTime = prevAudio.startTime + prevAudio.duration;
-        const gapDuration = currentAudio.startTime - prevEndTime;
-        
-        if (gapDuration > 0) {
-          // Add silence gap between audios
-          audioFilterChain += `anullsrc=channel_layout=stereo:sample_rate=48000:duration=${gapDuration}[gap_${i}];`;
-          audioFilterChain += `[audio_${i-1}][gap_${i}][${i + 3}:a]concat=n=3:v=0:a=1[audio_${i}];`;
-        } else {
-          // No gap needed, just concatenate
-          audioFilterChain += `[audio_${i-1}][${i + 3}:a]concat=n=2:v=0:a=1[audio_${i}];`;
-        }
-      }
-      
-      // Final audio output
-      const finalAudioIndex = audioFiles.length - 1;
-      audioFilterChain += `[audio_${finalAudioIndex}]acopy[final_audio]`;
-    } else {
-      // Fallback if no audio files
-      audioFilterChain = 'anullsrc=channel_layout=stereo:sample_rate=48000[final_audio]';
-    }
-    
-    const filterComplex = [...filters, audioFilterChain].join(';');
-    
-    console.log('Filter complex:', filterComplex);
+    // Sort audio files by start time to ensure proper ordering
+    const sortedAudioFiles = [...audioFiles].sort((a, b) => a.startTime - b.startTime);
+    console.log('Creating video with timing:', sortedAudioFiles.map(a => 
+      `${a.character}: ${a.startTime}s-${a.startTime + a.duration}s`
+    ));
 
+    // Step 1: Create combined audio - SEQUENTIAL like the frontend preview
+    const combinedAudioPath = path.join(tempDir, 'combined_audio.wav');
+    
+    // Simple sequential concatenation with small gaps (like frontend preview)
+    const audioInputs = [];
+    const GAP_DURATION = 0.2; // 200ms gap like frontend preview
+    
+    for (let i = 0; i < sortedAudioFiles.length; i++) {
+      // Add the audio file
+      audioInputs.push(`[${i}:a]`);
+      
+      // Add gap between files (except after the last one)
+      if (i < sortedAudioFiles.length - 1) {
+        audioInputs.push(`anullsrc=duration=${GAP_DURATION}:sample_rate=44100:channel_layout=stereo[gap${i}]`);
+        audioInputs.push(`[gap${i}]`);
+      }
+    }
+    
+    // Create simple concatenation
+    const audioFilterComplex = [
+      ...audioInputs.filter(item => item.includes('anullsrc')),
+      `${audioInputs.filter(item => item.startsWith('[') && item.endsWith(']')).join('')}concat=n=${audioInputs.filter(item => item.startsWith('[') && item.endsWith(']')).length}:v=0:a=1[out]`
+    ].join(';');
+
+    console.log('Sequential audio filter:', audioFilterComplex);
+
+    // Create combined audio
     await new Promise((resolve, reject) => {
-      const command = ffmpeg()
-        .input(videoPath)
-        .inputOptions(['-t', (metadata.totalDuration + 1).toString()]) // Add 1 extra second
-        .input(stewieImagePath)
-        .input(peterImagePath);
-
-      // Add all audio files as inputs
-      audioFiles.forEach(audio => {
+      const command = ffmpeg();
+      
+      sortedAudioFiles.forEach(audio => {
         command.input(audio.fileName);
       });
-
+      
       command
-        .complexFilter(filterComplex)
+        .complexFilter(audioFilterComplex)
+        .outputOptions(['-map', '[out]', '-c:a', 'pcm_s16le'])
+        .output(combinedAudioPath)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
+    });
+
+    // Step 2: Create video with character overlays - SEQUENTIAL timeline
+    // Calculate timeline exactly like frontend preview: sequential with small gaps
+    const sequentialTimeline = [];
+    let currentTime = 0;
+    
+    for (let i = 0; i < sortedAudioFiles.length; i++) {
+      const audio = sortedAudioFiles[i];
+      
+      // Character appears for the duration of their audio
+      sequentialTimeline.push({
+        character: audio.character,
+        startTime: currentTime,
+        endTime: currentTime + audio.duration
+      });
+      
+      // Move to next time slot (audio duration + gap)
+      currentTime += audio.duration;
+      if (i < sortedAudioFiles.length - 1) {
+        currentTime += GAP_DURATION; // Add gap between files
+      }
+    }
+    
+    console.log('Sequential timing (like preview):', sequentialTimeline.map(t => `${t.character}: ${t.startTime}s-${t.endTime}s`));
+    
+    const videoFilterComplex = [];
+    
+    // Scale character images
+    videoFilterComplex.push('[1:v]scale=500:500[stewie_img]');
+    videoFilterComplex.push('[2:v]scale=500:500,hflip[peter_img]');
+    
+    // Create overlays for each character using SEQUENTIAL timeline (like preview)
+    let videoBase = '0:v';
+    for (let i = 0; i < sequentialTimeline.length; i++) {
+      const timing = sequentialTimeline[i];
+      const nextBase = `video${i}`;
+      
+      if (timing.character === 'stewie') {
+        videoFilterComplex.push(
+          `[${videoBase}][stewie_img]overlay=(W-w)/2:(H-h)/2:enable='between(t,${timing.startTime},${timing.endTime})'[${nextBase}]`
+        );
+      } else {
+        videoFilterComplex.push(
+          `[${videoBase}][peter_img]overlay=(W-w)/2:(H-h)/2:enable='between(t,${timing.startTime},${timing.endTime})'[${nextBase}]`
+        );
+      }
+      videoBase = nextBase;
+    }
+
+    console.log('Video filter:', videoFilterComplex.join(';'));
+
+    // Calculate total duration of sequential timeline
+    const totalSequentialDuration = sequentialTimeline.length > 0 ? 
+      sequentialTimeline[sequentialTimeline.length - 1].endTime + 1 : 10;
+
+    // Combine video with audio
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(videoPath)
+        .inputOptions(['-t', totalSequentialDuration.toString()])
+        .input(stewieImagePath)
+        .input(peterImagePath)
+        .input(combinedAudioPath)
+        .complexFilter(videoFilterComplex.join(';'))
         .outputOptions([
-          '-map', `[${currentBase}]`,
-          '-map', '[final_audio]',
+          '-map', `[${videoBase}]`,
+          '-map', '3:a',
           '-c:v', 'libx264',
           '-c:a', 'aac',
           '-shortest',
-          '-y' // Overwrite output file
+          '-y'
         ])
         .output(outputPath)
         .on('start', (cmd: string) => {
-          console.log('Starting FFmpeg with command:', cmd);
-        })
-        .on('stderr', (stderrLine: string) => {
-          console.log('FFmpeg stderr:', stderrLine);
+          console.log('Starting FFmpeg command:', cmd);
         })
         .on('end', () => {
           console.log('FFmpeg processing finished');
@@ -199,8 +237,9 @@ export async function POST(request: Request) {
     
     // Cleanup temp files
     await Promise.all([
-      ...audioFiles.map(audio => fs.promises.unlink(audio.fileName).catch(() => {})),
-      fs.promises.unlink(outputPath).catch(() => {})
+      ...sortedAudioFiles.map(audio => fs.promises.unlink(audio.fileName).catch(() => {})),
+      fs.promises.unlink(outputPath).catch(() => {}),
+      fs.promises.unlink(combinedAudioPath).catch(() => {})
     ]);
 
     return new NextResponse(videoBuffer, {
