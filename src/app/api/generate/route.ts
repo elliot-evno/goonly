@@ -24,7 +24,9 @@ export async function POST(request: Request) {
         {"stewie": "How does this work?", "peter": "Well, it's like this..."},
         {"stewie": "But what about...?", "peter": "Oh, that's easy..."}
       ]
-      
+      Avoid making family guy references, and try to just make so that Peter gives a good answer to Stewie's question using funny examples. 
+     Both Stewie and Peter should use simple terms and words. Their sentences should be brief and stewie should start with a question on the topic.
+     It should almost be as if Peter is Stewie's teacher.
       Make it 3-4 turns long.
     `;
 
