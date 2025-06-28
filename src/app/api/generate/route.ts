@@ -6,15 +6,24 @@ const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY || "");
 
 interface ConversationRequest {
   topic: string;
+  knowledge?: string;
 }
 
 export async function POST(request: Request) {
   try {
     const data: ConversationRequest = await request.json();
     
+    const knowledgeSection = data.knowledge ? `
+      
+      Additional Knowledge Context:
+      ${data.knowledge}
+      
+      Use this knowledge context to inform the conversation but keep the explanations simple and accessible.
+    ` : '';
+
     const prompt = `
       Create an educational conversation between Stewie (a highly intelligent baby) and Peter (his simple-minded father) about the following topic: ${data.topic}
-      
+      ${knowledgeSection}
       The conversation should be informative but entertaining, with Stewie asking intelligent questions and Peter explaining things in his characteristic simple way.
       
       Format the response as a JSON array of conversation turns, where each turn has "stewie" and "peter" keys.
@@ -36,15 +45,37 @@ export async function POST(request: Request) {
     const response = await result.response;
     let text = response.text();
     
-    text = text.replace(/```json\n/g, '').replace(/```/g, '').trim();
+    // Clean up the text more thoroughly
+    text = text.replace(/```json\n?/g, '').replace(/```/g, '').trim();
+    
+    // Remove any leading/trailing non-JSON content
+    const jsonStart = text.indexOf('[');
+    const jsonEnd = text.lastIndexOf(']');
+    
+    if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+      text = text.substring(jsonStart, jsonEnd + 1);
+    }
     
     try {
       const conversation = JSON.parse(text);
+      
+      // Validate that it's an array of conversation objects
+      if (!Array.isArray(conversation)) {
+        throw new Error("Response is not an array");
+      }
+      
+      for (const turn of conversation) {
+        if (!turn.stewie || !turn.peter) {
+          throw new Error("Invalid conversation format");
+        }
+      }
+      
       return NextResponse.json(conversation);
-    } catch {
-      console.error("JSON parsing error:", text);
+    } catch (parseError) {
+      console.error("JSON parsing error:", parseError);
+      console.error("Raw AI response:", text);
       return NextResponse.json(
-        { error: "Failed to parse AI response as JSON" },
+        { error: "Failed to parse AI response as JSON", rawResponse: text.substring(0, 200) + "..." },
         { status: 500 }
       );
     }
