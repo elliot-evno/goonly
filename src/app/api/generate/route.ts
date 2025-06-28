@@ -40,14 +40,14 @@ export async function POST(request: Request) {
     try {
       const conversation = JSON.parse(text);
       return NextResponse.json(conversation);
-    } catch (jsonError) {
+    } catch (jsonError: Error) {
       console.error("JSON parsing error:", text);
       return NextResponse.json(
         { error: "Failed to parse AI response as JSON" },
         { status: 500 }
       );
     }
-  } catch (error: any) {
+  } catch (error: Error) {
     console.error("Conversation generation error:", error);
     return NextResponse.json(
       { error: error.message || "Internal server error" },
