@@ -8,6 +8,7 @@ interface ConversationTurn {
 
 export default function HomePage() {
   const [topic, setTopic] = useState('');
+  const [knowledge, setKnowledge] = useState('');
   const [conversation, setConversation] = useState<ConversationTurn[]>([]);
   const [isGeneratingConversation, setIsGeneratingConversation] = useState(false);
   const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
@@ -32,7 +33,7 @@ export default function HomePage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ topic }),
+        body: JSON.stringify({ topic, knowledge: knowledge.trim() || undefined }),
       });
 
       if (!response.ok) {
@@ -118,7 +119,7 @@ export default function HomePage() {
       </p>
       
       {/* Input Form */}
-      <form onSubmit={handleSubmit} className="w-full max-w-md mb-8">
+      <form onSubmit={handleSubmit} className="w-full max-w-2xl mb-8">
         <div className="space-y-4">
           <input
             type="text"
@@ -129,6 +130,26 @@ export default function HomePage() {
             required
             disabled={isGeneratingConversation || isGeneratingVideo}
           />
+          
+          {/* Knowledge Section */}
+          <div className="space-y-2">
+            <label htmlFor="knowledge" className="block text-sm font-medium text-gray-300">
+              Knowledge Context (Optional)
+            </label>
+            <textarea
+              id="knowledge"
+              value={knowledge}
+              onChange={(e) => setKnowledge(e.target.value)}
+              placeholder="Paste any additional context, articles, or information you want the AI to reference when creating the conversation..."
+              className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-vertical"
+              rows={4}
+              disabled={isGeneratingConversation || isGeneratingVideo}
+            />
+            <p className="text-xs text-gray-400">
+              This content will help inform the conversation but explanations will remain simple and accessible.
+            </p>
+          </div>
+          
           <button
             type="submit"
             disabled={isGeneratingConversation || isGeneratingVideo}
@@ -277,6 +298,7 @@ export default function HomePage() {
           <button
             onClick={() => {
               setTopic('');
+              setKnowledge('');
               setConversation([]);
               setVideoUrl(null);
               setVideoProgress('');
