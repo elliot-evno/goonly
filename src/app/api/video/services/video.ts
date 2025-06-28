@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
 import { CharacterTimeline } from '../types';
 import { spawn } from 'child_process';
@@ -62,7 +60,7 @@ export async function createFinalVideo(
       '[2:v]scale=-1:700[peter_img]',
       
       // Add character overlays with dynamic positioning
-      `[0:v][stewie_img]overlay=200:H-h-30:enable='${stewieOverlay}'[with_stewie]`,
+      `[0:v][stewie_img]overlay=400:H-h-30:enable='${stewieOverlay}'[with_stewie]`,
       `[with_stewie][peter_img]overlay=-300:H-h-30:enable='${peterOverlay}'[with_characters]`,
       
       // Add subtitles with center alignment and exact positioning
