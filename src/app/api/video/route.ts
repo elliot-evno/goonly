@@ -5,8 +5,7 @@ import {
   ConversationTurn, 
   AudioResult, 
   AudioFileData, 
-  WordTiming, 
-  CharacterTimeline 
+  WordTiming
 } from './types';
 import { generateAudio, getWhisperWordTimings, combineAudioFiles, estimateWordTiming } from './services/audio';
 import { createSubtitleFile } from './services/subtitle';
@@ -89,7 +88,6 @@ export async function POST(request: Request) {
       currentTime += audio.duration + GAP_DURATION;
     }
     
-        // Step 2: Create precise word timeline using Whisper alignment
     console.log('🎯 Creating precise word timeline with Whisper alignment...');
     const wordTimeline: WordTiming[] = [];
     const characterTimeline: Array<{ character: 'stewie' | 'peter'; startTime: number; endTime: number }> = [];
@@ -124,7 +122,7 @@ export async function POST(request: Request) {
             character: audio.character
           });
         }
-              });
+      });
     }
     
     // OPTIMIZATION 3: Fix duration calculation 

@@ -38,8 +38,8 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
       const tempPath = path.join(process.cwd(), 'temp', `temp_${Date.now()}_${Math.random()}.wav`);
       await fs.promises.writeFile(tempPath, audioBuffer);
       
-      const duration = await new Promise<number>((resolve, reject) => {
-        ffmpeg.ffprobe(tempPath, (err: any, metadata: any) => {
+      const duration = await new Promise<number>((resolve) => {
+        ffmpeg.ffprobe(tempPath, (err: Error | null, metadata: { format: { duration?: number } }) => {
           if (err) {
             console.warn(`⚠️ Failed to get duration for ${character}, using fallback:`, err.message);
             resolve(3.0); // Fallback duration
@@ -106,7 +106,7 @@ export async function getWhisperWordTimings(audioPath: string, text: string): Pr
     
     if (result.word_segments && result.word_segments.length > 0) {
       console.log(`✅ Got ${result.word_segments.length} precise word timings`);
-      return result.word_segments.map((segment: any) => ({
+      return result.word_segments.map((segment: { word: string; start: number; end: number }) => ({
         word: segment.word.trim(),
         start: segment.start,
         end: segment.end
@@ -123,7 +123,7 @@ export async function getWhisperWordTimings(audioPath: string, text: string): Pr
     await fs.promises.writeFile(tempPath, audioBuffer);
     
     const duration = await new Promise<number>((resolve) => {
-      ffmpeg.ffprobe(tempPath, (err: any, metadata: any) => {
+      ffmpeg.ffprobe(tempPath, (err: Error | null, metadata: { format: { duration?: number } }) => {
         if (err) resolve(3.0); // Fallback duration
         else resolve(metadata.format.duration || 3.0);
       });

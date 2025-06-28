@@ -1,5 +1,4 @@
-import ffmpeg from 'fluent-ffmpeg';
-import { CharacterTimeline } from '../types';
+// Video processing service using ffmpeg
 import { spawn } from 'child_process';
 
 interface SubtitleConfig {
@@ -26,7 +25,7 @@ export async function createFinalVideo(
   config?: VideoConfig
 ): Promise<void> {
   // Default configuration
-  const subtitleConfig = config?.subtitleConfig ?? {
+  const { fadeInDuration, fadeOutDuration } = config?.subtitleConfig ?? {
     fadeInDuration: 0.05,
     fadeOutDuration: 0.05,
     scaleAnimation: false,
@@ -37,12 +36,12 @@ export async function createFinalVideo(
   // Create character overlay expressions
   const stewieOverlay = characterTimeline
     .filter(t => t.character === 'stewie')
-    .map(t => `between(t,${t.startTime},${t.endTime})`)
+    .map(t => `between(t,${t.startTime},${t.endTime})*if(between(t,${t.startTime},${t.startTime + fadeInDuration}),(t-${t.startTime})/${fadeInDuration},if(between(t,${t.endTime - fadeOutDuration},${t.endTime}),(${t.endTime}-t)/${fadeOutDuration},1))`)
     .join('+');
 
   const peterOverlay = characterTimeline
     .filter(t => t.character === 'peter')
-    .map(t => `between(t,${t.startTime},${t.endTime})`)
+    .map(t => `between(t,${t.startTime},${t.endTime})*if(between(t,${t.startTime},${t.startTime + fadeInDuration}),(t-${t.startTime})/${fadeInDuration},if(between(t,${t.endTime - fadeOutDuration},${t.endTime}),(${t.endTime}-t)/${fadeOutDuration},1))`)
     .join('+');
 
   // Build the FFmpeg command with improved subtitle rendering
