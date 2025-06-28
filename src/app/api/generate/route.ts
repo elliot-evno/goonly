@@ -26,6 +26,7 @@ export async function POST(request: Request) {
       ]
       Avoid making family guy references, and try to just make so that Peter gives a good answer to Stewie's question using funny examples. 
      Both Stewie and Peter should use simple terms and words. Their sentences should be brief and stewie should start with a question on the topic.
+     Do not use special characters or emojis. Because using "*" for example will make the voice say "asterisk", we do not want that.
      It should almost be as if Peter is Stewie's teacher.
       Make it 3-4 turns long.
     `;
@@ -40,18 +41,20 @@ export async function POST(request: Request) {
     try {
       const conversation = JSON.parse(text);
       return NextResponse.json(conversation);
-    } catch (jsonError: Error) {
+    } catch {
       console.error("JSON parsing error:", text);
       return NextResponse.json(
         { error: "Failed to parse AI response as JSON" },
         { status: 500 }
       );
     }
-  } catch (error: Error) {
+  } catch (error) {
     console.error("Conversation generation error:", error);
+    const errorMessage = error instanceof Error ? error.message : "Internal server error";
+    const errorStatus = error instanceof Error && 'status' in error ? (error as { status: number }).status : 500;
     return NextResponse.json(
-      { error: error.message || "Internal server error" },
-      { status: error.status || 500 }
+      { error: errorMessage },
+      { status: errorStatus }
     );
   }
 }
