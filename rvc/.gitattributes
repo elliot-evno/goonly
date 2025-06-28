@@ -1,4 +1,0 @@
-assets/weights/*.pth filter=lfs diff=lfs merge=lfs -text
-assets/weights/*.index filter=lfs diff=lfs merge=lfs -text
-assets/hubert/*.pth filter=lfs diff=lfs merge=lfs -text
-assets/rmvpe/*.pth filter=lfs diff=lfs merge=lfs -text
