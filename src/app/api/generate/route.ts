@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, Part } from "@google/generative-ai";
 import { NextResponse } from "next/server";
 import { env } from "../env";
 
@@ -31,13 +31,13 @@ export async function POST(request: Request) {
 
     const mediaSection = data.mediaFiles && data.mediaFiles.length > 0 ? `
       
-      IMPORTANT: I have provided ${data.mediaFiles.length} image(s) that you MUST analyze and reference in the conversation.
+      IMPORTANT: I have provided ${data.mediaFiles.length} image(s).
       You MUST include imageOverlays data for each image showing when it should appear in the video.
       
       For each uploaded image:
       1. Look at what the image shows
-      2. Have Peter reference what he sees in the image during his explanation
-      3. Provide exact timing for when the image should be displayed
+      2. Peter should NEVER mention or reference the images in his dialogue
+      3. The images should appear automatically at relevant moments through imageOverlays timing
       4. Use the exact filename provided
       
       Available images: ${data.mediaFiles.map(f => f.filename).join(', ')}
@@ -51,9 +51,15 @@ export async function POST(request: Request) {
       ${mediaSection}
       The conversation should be informative but entertaining, with Stewie asking intelligent questions and Peter explaining things in his characteristic simple way.
       
+      IMPORTANT: Peter and Stewie should talk to each other like normal people. Avoid any references to:
+      - Stewie being a baby
+      - Peter being simple-minded or an imbecile
+      - Any typical Family Guy insults or put-downs
+      They should interact respectfully while still being funny and engaging.
+      
       Format the response as a JSON array of conversation turns, where each turn has "stewie" and "peter" keys.
       ${data.mediaFiles && data.mediaFiles.length > 0 ? 
-        'MANDATORY: Since images were uploaded, you MUST include "imageOverlays" array in the conversation turns where Peter references the images.' : 
+        'MANDATORY: Since images were uploaded, you MUST include "imageOverlays" array in the conversation turns. Peter should never mention the images in his dialogue - they will appear automatically through the overlay timing.' : 
         'If you reference uploaded images in the conversation, also include an "imageOverlays" array with timing information.'
       }
       
@@ -62,13 +68,13 @@ export async function POST(request: Request) {
         [
           {
             "stewie": "How does this work?", 
-            "peter": "Well, look at this image here. You can see exactly what I mean...",
+            "peter": "Well, it works by making things better and easier to use...",
             "imageOverlays": [
               {
                 "filename": "${data.mediaFiles[0].filename}",
                 "startTime": 1.0,
                 "duration": 4.0,
-                "description": "Shows when Peter references the uploaded image"
+                "description": "Shows relevant image during Peter's explanation"
               }
             ]
           },
@@ -97,17 +103,20 @@ export async function POST(request: Request) {
       - duration: how long in seconds the image should be visible
       - filename: exact filename of the uploaded image to show
       - description: brief explanation of why this image is shown at this moment
+      
+      IMPORTANT: Peter should never say things like "look at this image", "as you can see here", or reference images in any way in his dialogue.
+      
       Avoid making family guy references, and try to just make so that Peter gives a good answer to Stewie's question using funny examples. 
      Both Stewie and Peter should use simple terms and words. Their sentences should be brief and stewie should start with a question on the topic.
      Do not use special characters or emojis. Because using "*" for example will make the voice say "asterisk", we do not want that.
-     It should almost be as if Peter is Stewie's teacher.
+     It should almost be as if Peter is Stewie's teacher, with both characters treating each other with respect.
       Make it 3-4 turns long.
     `;
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
     
     // Prepare content array with prompt and media files
-    const content: any[] = [prompt];
+    const content: (string | Part)[] = [prompt];
     
     // Add media files to the content
     if (data.mediaFiles && data.mediaFiles.length > 0) {
