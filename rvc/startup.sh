@@ -46,28 +46,17 @@ if [[ "$VENV_PYTHON_VERSION" != "3.10" ]]; then
     echo "Try deleting the rvc_env folder and running this script again"
     exit 1
 fi
-
 # Upgrade pip and downgrade to compatible version
-echo "⬇️ Setting up compatible pip version..."
-python -m pip install --upgrade pip
-python -m pip install "pip<24.1"
+python -m pip install --upgrade pip --quiet > /dev/null 2>&1
+python -m pip install "pip<24.1" --quiet > /dev/null 2>&1
 
 # Install requirements
-echo "📥 Installing requirements..."
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt --quiet > /dev/null 2>&1
 
 # Verify uvicorn is installed and working
-echo "🔍 Verifying uvicorn installation..."
-if python -m uvicorn --version &> /dev/null; then
-    echo "✅ uvicorn is properly installed"
-else
-    echo "❌ Error: uvicorn is not working properly"
-    echo "Attempting to reinstall uvicorn..."
-    python -m pip install --force-reinstall uvicorn
-    if python -m uvicorn --version &> /dev/null; then
-        echo "✅ uvicorn reinstalled successfully"
-    else
-        echo "❌ Error: Failed to install uvicorn properly"
+if ! python -m uvicorn --version &> /dev/null; then
+    python -m pip install --force-reinstall uvicorn --quiet > /dev/null 2>&1
+    if ! python -m uvicorn --version &> /dev/null; then
         exit 1
     fi
 fi

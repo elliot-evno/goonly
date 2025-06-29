@@ -1,5 +1,5 @@
-from fastapi import FastAPI, Form, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Form, HTTPException, File, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import sys
@@ -10,6 +10,14 @@ import requests
 import logging
 import uuid
 from dotenv import load_dotenv
+
+# Import whisper-timestamped for word-level timing
+try:
+    import whisper_timestamped as whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
+    print("⚠️ whisper-timestamped not available. Install with: pip install whisper-timestamped")
 
 # Import your RVC inference logic:
 from infer.modules.vc.modules import VC
@@ -26,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Global variables for models (will be loaded on first request)
 models = {}
+whisper_model = None
 
 # Model configurations
 MODEL_CONFIG = {
@@ -101,6 +110,32 @@ def load_model(character: str):
             os.chdir(original_cwd)
             
     return models[character]
+
+def load_whisper_model():
+    """Load the Whisper model for word-level timing if not already loaded"""
+    global whisper_model
+    
+    logger.info("Checking whisper model status...")
+    
+    if not WHISPER_AVAILABLE:
+        logger.error("whisper-timestamped is not installed")
+        raise RuntimeError("whisper-timestamped is not installed. Install with: pip install whisper-timestamped")
+    
+    if whisper_model is None:
+        logger.info("Whisper model not loaded, loading now...")
+        try:
+            logger.info("Calling whisper.load_model('small', device='cpu')...")
+            # Use small model for balance of speed and accuracy
+            whisper_model = whisper.load_model("small", device="cpu")
+            logger.info("✅ Whisper model loaded successfully!")
+        except Exception as e:
+            logger.error(f"Failed to load Whisper model: {type(e).__name__}: {e}")
+            logger.error("Whisper model loading traceback:", exc_info=True)
+            raise
+    else:
+        logger.info("Whisper model already loaded, reusing existing model")
+            
+    return whisper_model
 
 async def generate_tts_audio(text: str, character: str, output_path: str) -> bool:
     """Generate TTS audio with fallback chain"""
@@ -224,9 +259,135 @@ async def tts_endpoint(text: str = Form(...), character: str = Form("peter")):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "loaded_models": list(models.keys())}
+    return {
+        "status": "healthy", 
+        "loaded_models": list(models.keys()),
+        "whisper_available": WHISPER_AVAILABLE,
+        "whisper_loaded": whisper_model is not None,
+        "whisper_endpoint": "enabled"
+    }
 
 @app.get("/characters")
 async def get_characters():
     """Get available character voices"""
     return {"characters": list(MODEL_CONFIG.keys())}
+
+@app.post("/whisper-timestamped/")
+async def whisper_timestamped_endpoint(
+    audio: UploadFile = File(...),
+    text: str = Form(...)
+):
+    """Generate CapCut-style word-level timestamps using whisper-timestamped"""
+    request_id = str(uuid.uuid4())[:8]
+    
+    logger.info(f"[{request_id}] Starting whisper-timestamped request")
+    logger.info(f"[{request_id}] Audio filename: {audio.filename}, Content-Type: {audio.content_type}")
+    logger.info(f"[{request_id}] Text length: {len(text)} chars, Preview: {text[:50]}...")
+    
+    if not WHISPER_AVAILABLE:
+        logger.error(f"[{request_id}] Whisper not available - whisper-timestamped not installed")
+        raise HTTPException(
+            status_code=500, 
+            detail="whisper-timestamped is not installed. Install with: pip install whisper-timestamped"
+        )
+    
+    if not text.strip():
+        logger.error(f"[{request_id}] Empty text provided")
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+    
+    temp_audio_path = None
+    
+    try:
+        logger.info(f"[{request_id}] Creating temporary file...")
+        # Save uploaded audio to temp file
+        temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        temp_audio_path = temp_file.name
+        logger.info(f"[{request_id}] Temp file created: {temp_audio_path}")
+        
+        logger.info(f"[{request_id}] Reading uploaded audio content...")
+        audio_content = await audio.read()
+        logger.info(f"[{request_id}] Audio content size: {len(audio_content)} bytes")
+        
+        logger.info(f"[{request_id}] Writing audio to temp file...")
+        temp_file.write(audio_content)
+        temp_file.close()
+        logger.info(f"[{request_id}] Audio written to temp file successfully")
+        
+        # Load Whisper model
+        logger.info(f"[{request_id}] Loading Whisper model...")
+        model = load_whisper_model()
+        logger.info(f"[{request_id}] Whisper model loaded successfully")
+        
+        logger.info(f"[{request_id}] Loading audio data with whisper.load_audio...")
+        # Load audio and transcribe with word-level timestamps
+        audio_data = whisper.load_audio(temp_audio_path)
+        logger.info(f"[{request_id}] Audio data loaded, shape/length: {len(audio_data) if hasattr(audio_data, '__len__') else 'unknown'}")
+        
+        # Use whisper-timestamped for accurate word timing
+        logger.info(f"[{request_id}] Starting whisper transcription with word timestamps...")
+        try:
+            # Use whisper-timestamped's transcribe function (not transcribe_timestamped)
+            # The API is: whisper.transcribe(model, audio, **kwargs)
+            result = whisper.transcribe(
+                whisper_model, 
+                audio_data,
+                language="en",  # You can make this configurable
+                verbose=False
+            )
+            logger.info(f"[{request_id}] Whisper transcription completed successfully")
+        except Exception as e:
+            logger.error(f"[{request_id}] Whisper transcription failed: {str(e)}")
+            raise
+        
+        logger.info(f"[{request_id}] Result keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
+        logger.info(f"[{request_id}] Generated {len(result.get('segments', []))} segments")
+        
+        # Extract word segments from whisper-timestamped format
+        word_segments = []
+        
+        if "segments" in result:
+            logger.info(f"[{request_id}] Processing {len(result['segments'])} segments for word extraction")
+            for i, segment in enumerate(result["segments"]):
+                logger.info(f"[{request_id}] Segment {i} keys: {list(segment.keys()) if isinstance(segment, dict) else 'not a dict'}")
+                
+                # whisper-timestamped puts words directly in segments
+                if "words" in segment and segment["words"]:
+                    for word_data in segment["words"]:
+                        if isinstance(word_data, dict) and "text" in word_data:
+                            word_segments.append({
+                                "word": word_data.get("text", "").strip(),
+                                "start": word_data.get("start", 0),
+                                "end": word_data.get("end", 0)
+                            })
+                else:
+                    logger.warning(f"[{request_id}] Segment {i} has no 'words' key or empty words")
+        else:
+            logger.error(f"[{request_id}] Result has no 'segments' key")
+        
+        logger.info(f"[{request_id}] Extracted {len(word_segments)} word segments")
+        
+        # Clean up temp file
+        try:
+            os.unlink(temp_audio_path)
+            logger.info(f"[{request_id}] Temp file cleaned up successfully")
+        except Exception as e:
+            logger.warning(f"[{request_id}] Could not delete temp file {temp_audio_path}: {e}")
+        
+        return {"word_segments": word_segments}
+        
+    except Exception as e:
+        logger.error(f"[{request_id}] Exception occurred: {type(e).__name__}: {str(e)}")
+        logger.error(f"[{request_id}] Exception traceback:")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        # Clean up temp file on error only if it still exists
+        if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
+            try:
+                os.unlink(temp_audio_path)
+                logger.info(f"[{request_id}] Temp file cleaned up after error")
+            except Exception as cleanup_error:
+                logger.warning(f"[{request_id}] Could not delete temp file after error: {cleanup_error}")
+        
+        logger.error(f"[{request_id}] Returning 500 error to client")
+        raise HTTPException(status_code=500, detail=f"Whisper timestamped processing failed: {str(e)}")

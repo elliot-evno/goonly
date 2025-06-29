@@ -83,7 +83,7 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
 
 export async function getWhisperWordTimings(audioPath: string, text: string): Promise<Array<{word: string, start: number, end: number}>> {
   try {
-    console.log(`🎯 Getting precise word timings for: "${text.substring(0, 50)}..."`);
+    console.log(`🎯 Getting CapCut-style word timings for: "${text.substring(0, 50)}..."`);
     
     const formData = new FormData();
     const audioBuffer = await fs.promises.readFile(audioPath);
@@ -91,84 +91,66 @@ export async function getWhisperWordTimings(audioPath: string, text: string): Pr
     
     formData.append('audio', audioBlob, 'audio.wav');
     formData.append('text', text);
-    formData.append('word_timestamps', 'true');
     
-    const response = await fetch('http://localhost:8000/whisper-align/', {
+    const response = await fetch('http://localhost:8000/whisper-timestamped/', {
       method: 'POST',
       body: formData,
     });
     
     if (!response.ok) {
-      throw new Error(`Whisper alignment failed: ${response.status}`);
+      throw new Error(`Whisper timestamped failed: ${response.status}`);
     }
     
     const result = await response.json();
     
     if (result.word_segments && result.word_segments.length > 0) {
-      console.log(`✅ Got ${result.word_segments.length} precise word timings`);
+      console.log(`✅ Got ${result.word_segments.length} CapCut-style word timings`);
       return result.word_segments.map((segment: { word: string; start: number; end: number }) => ({
         word: segment.word.trim(),
         start: segment.start,
         end: segment.end
       }));
     } else {
-      throw new Error('No word segments returned from Whisper');
+      throw new Error('No word segments returned from whisper-timestamped');
     }
     
   } catch (error) {
-    console.warn(`⚠️ Whisper alignment failed, falling back to estimated timing:`, error);
-    // We don't have duration here, so we'll need to estimate from the audio file
-    const audioBuffer = await fs.promises.readFile(audioPath);
-    const tempPath = path.join(process.cwd(), 'temp', `temp_timing_${Date.now()}.wav`);
-    await fs.promises.writeFile(tempPath, audioBuffer);
-    
-    const duration = await new Promise<number>((resolve) => {
-      ffmpeg.ffprobe(tempPath, (err: Error | null, metadata: { format: { duration?: number } }) => {
-        if (err) resolve(3.0); // Fallback duration
-        else resolve(metadata.format.duration || 3.0);
-      });
-    });
-    
-    await fs.promises.unlink(tempPath).catch(() => {});
-    return estimateWordTiming(text, duration);
+    console.warn(`⚠️ Whisper-timestamped failed, falling back to improved estimation:`, error);
+    return estimateWordTiming(text, await getAudioDuration(audioPath));
   }
+}
+
+async function getAudioDuration(audioPath: string): Promise<number> {
+  return new Promise<number>((resolve) => {
+    ffmpeg.ffprobe(audioPath, (err: Error | null, metadata: { format: { duration?: number } }) => {
+      if (err) resolve(3.0); // Fallback duration
+      else resolve(metadata.format.duration || 3.0);
+    });
+  });
 }
 
 export function estimateWordTiming(text: string, duration: number): Array<{word: string, start: number, end: number}> {
   const words = text.split(' ').filter(word => word.trim() !== '');
   
-  // Estimate relative durations based on word characteristics
-  const wordDurations = words.map(word => {
-    let baseDuration = 0.3; // Base duration per word
-    
-    // Longer words take more time
-    baseDuration += word.length * 0.05;
-    
-    // Add time for punctuation (pauses)
-    if (word.match(/[.!?]$/)) baseDuration += 0.3;
-    else if (word.match(/[,;:]$/)) baseDuration += 0.15;
-    
-    // Syllable estimation (rough)
-    const vowelMatches = word.match(/[aeiouAEIOU]/g);
-    const syllables = vowelMatches ? Math.max(1, vowelMatches.length) : 1;
-    baseDuration += syllables * 0.1;
-    
-    return baseDuration;
-  });
-  
-  // Scale to fit actual duration
-  const totalEstimated = wordDurations.reduce((sum, dur) => sum + dur, 0);
-  const scaleFactor = duration / totalEstimated;
+  if (words.length === 0) {
+    return [];
+  }
+
+  // Simple, even distribution (like CapCut actually does)
+  const avgTimePerWord = duration / words.length;
   
   let currentTime = 0;
-  return words.map((word, index) => {
-    const scaledDuration = wordDurations[index] * scaleFactor;
+  return words.map((word) => {
+    // Simple calculation - no complex heuristics
+    const wordDuration = avgTimePerWord;
+    
     const result = {
       word: word,
       start: currentTime,
-      end: currentTime + scaledDuration
+      end: currentTime + wordDuration
     };
-    currentTime += scaledDuration;
+    
+    currentTime += wordDuration;
     return result;
   });
 }
