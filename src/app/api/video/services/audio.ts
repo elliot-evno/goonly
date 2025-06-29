@@ -4,7 +4,6 @@ import ffmpeg from 'fluent-ffmpeg';
 import { AudioResult, AudioFileData } from '../types';
 
 export async function generateAudio(text: string, character: 'stewie' | 'peter', retries: number = 3): Promise<AudioResult> {
-  console.log(`🎤 Generating audio for ${character}: "${text.substring(0, 30)}..."`);
   
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -45,7 +44,6 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
             resolve(3.0); // Fallback duration
           } else {
             const actualDuration = metadata.format.duration || 3.0;
-            console.log(`✅ ${character}: ${actualDuration.toFixed(1)}s`);
             resolve(actualDuration);
           }
         });
@@ -83,7 +81,6 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
 
 export async function getWhisperWordTimings(audioPath: string, text: string): Promise<Array<{word: string, start: number, end: number}>> {
   try {
-    console.log(`🎯 Getting CapCut-style word timings for: "${text.substring(0, 50)}..."`);
     
     const formData = new FormData();
     const audioBuffer = await fs.promises.readFile(audioPath);
@@ -104,7 +101,6 @@ export async function getWhisperWordTimings(audioPath: string, text: string): Pr
     const result = await response.json();
     
     if (result.word_segments && result.word_segments.length > 0) {
-      console.log(`✅ Got ${result.word_segments.length} CapCut-style word timings`);
       return result.word_segments.map((segment: { word: string; start: number; end: number }) => ({
         word: segment.word.trim(),
         start: segment.start,

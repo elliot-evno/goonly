@@ -22,6 +22,12 @@ export async function createFinalVideo(
   characterTimeline: Array<{ character: 'stewie' | 'peter'; startTime: number; endTime: number }>,
   duration: number,
   outputPath: string,
+  imageOverlays?: Array<{
+    imagePath: string;
+    startTime: number;
+    endTime: number;
+    description: string;
+  }>,
   config?: VideoConfig
 ): Promise<void> {
   // Default configuration
@@ -44,27 +50,62 @@ export async function createFinalVideo(
     .map(t => `between(t,${t.startTime},${t.endTime})*if(between(t,${t.startTime},${t.startTime + fadeInDuration}),(t-${t.startTime})/${fadeInDuration},if(between(t,${t.endTime - fadeOutDuration},${t.endTime}),(${t.endTime}-t)/${fadeOutDuration},1))`)
     .join('+');
 
-  // Build the FFmpeg command with improved subtitle rendering
-  const command = [
+  // Build the FFmpeg command with improved subtitle rendering and image overlays
+  const inputs = [
     '-t', duration.toString(),
     '-i', videoPath,
     '-i', stewieImagePath,
     '-i', peterImagePath,
-    '-i', audioPath,
+    '-i', audioPath
+  ];
+
+  // Add image overlay inputs
+  const imageInputs: string[] = [];
+  const imageFilterChain: string[] = [];
+  if (imageOverlays && imageOverlays.length > 0) {
+    imageOverlays.forEach((overlay, index) => {
+      inputs.push('-i', overlay.imagePath);
+      const inputIndex = 4 + index; // Start after audio input (index 3)
+      const scaledLabel = `img_${index}_scaled`;
+      
+      // Scale image to be bigger and positioned above text
+      imageFilterChain.push(`[${inputIndex}:v]scale=600:-1[${scaledLabel}]`);
+    });
+  }
+
+  const filterChain = [
+    // Scale character images
+    '[1:v]scale=-1:700[stewie_img]',
+    '[2:v]scale=-1:700[peter_img]',
+    
+    // Add character overlays with dynamic positioning
+    `[0:v][stewie_img]overlay=400:H-h-30:enable='${stewieOverlay}'[with_stewie]`,
+    `[with_stewie][peter_img]overlay=-300:H-h-30:enable='${peterOverlay}'[with_characters]`,
+    
+    // Add image scaling for overlays
+    ...imageFilterChain,
+    
+    // Add image overlays
+    ...(imageOverlays && imageOverlays.length > 0 ? 
+      imageOverlays.map((overlay, index) => {
+        const inputLabel = index === 0 ? 'with_characters' : `with_overlay_${index - 1}`;
+        const outputLabel = index === imageOverlays.length - 1 ? 'with_overlays' : `with_overlay_${index}`;
+        const scaledLabel = `img_${index}_scaled`;
+        const overlayEnable = `between(t,${overlay.startTime},${overlay.endTime})`;
+        
+        return `[${inputLabel}][${scaledLabel}]overlay=(W-w)/2:100:enable='${overlayEnable}'[${outputLabel}]`;
+      }) : []
+    ),
+    
+    // Add subtitles with center alignment and exact positioning
+    `[${imageOverlays && imageOverlays.length > 0 ? 'with_overlays' : 'with_characters'}]subtitles='${subtitlePath}':force_style='FontName=Arial Black,Fontsize=140,PrimaryColour=&H00FFFFFF,BorderStyle=1,Outline=8,Shadow=3,Alignment=2'[final]`
+  ];
+
+  const command = [
+    ...inputs,
     '-y',
     '-filter_complex',
-    [
-      // Scale character images
-      '[1:v]scale=-1:700[stewie_img]',
-      '[2:v]scale=-1:700[peter_img]',
-      
-      // Add character overlays with dynamic positioning
-      `[0:v][stewie_img]overlay=400:H-h-30:enable='${stewieOverlay}'[with_stewie]`,
-      `[with_stewie][peter_img]overlay=-300:H-h-30:enable='${peterOverlay}'[with_characters]`,
-      
-      // Add subtitles with center alignment and exact positioning
-      `[with_characters]subtitles='${subtitlePath}':force_style='FontName=Arial Black,Fontsize=140,PrimaryColour=&H00FFFFFF,BorderStyle=1,Outline=8,Shadow=3,Alignment=2'[final]`
-    ].join(';'),
+    filterChain.join(';'),
     
     // Map the final video and audio streams
     '-map', '[final]',
@@ -82,7 +123,6 @@ export async function createFinalVideo(
     outputPath
   ];
 
-  console.log('Starting FFmpeg command:', 'ffmpeg', command.join(' '));
 
   return new Promise((resolve, reject) => {
     const ffmpeg = spawn('ffmpeg', command);

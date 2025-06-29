@@ -4,9 +4,17 @@ import { env } from "../env";
 
 const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY || "");
 
+interface MediaFile {
+  data: string; // base64 encoded
+  mimeType: string;
+  filename: string;
+  type: 'image' | 'video';
+}
+
 interface ConversationRequest {
   topic: string;
   knowledge?: string;
+  mediaFiles?: MediaFile[];
 }
 
 export async function POST(request: Request) {
@@ -21,18 +29,74 @@ export async function POST(request: Request) {
       Use this knowledge context to inform the conversation but keep the explanations simple and accessible.
     ` : '';
 
+    const mediaSection = data.mediaFiles && data.mediaFiles.length > 0 ? `
+      
+      IMPORTANT: I have provided ${data.mediaFiles.length} image(s) that you MUST analyze and reference in the conversation.
+      You MUST include imageOverlays data for each image showing when it should appear in the video.
+      
+      For each uploaded image:
+      1. Look at what the image shows
+      2. Have Peter reference what he sees in the image during his explanation
+      3. Provide exact timing for when the image should be displayed
+      4. Use the exact filename provided
+      
+      Available images: ${data.mediaFiles.map(f => f.filename).join(', ')}
+      
+      REQUIRED: Include imageOverlays array in at least one conversation turn.
+    ` : '';
+
     const prompt = `
       Create an educational conversation between Stewie (a highly intelligent baby) and Peter (his simple-minded father) about the following topic: ${data.topic}
       ${knowledgeSection}
+      ${mediaSection}
       The conversation should be informative but entertaining, with Stewie asking intelligent questions and Peter explaining things in his characteristic simple way.
       
       Format the response as a JSON array of conversation turns, where each turn has "stewie" and "peter" keys.
+      ${data.mediaFiles && data.mediaFiles.length > 0 ? 
+        'MANDATORY: Since images were uploaded, you MUST include "imageOverlays" array in the conversation turns where Peter references the images.' : 
+        'If you reference uploaded images in the conversation, also include an "imageOverlays" array with timing information.'
+      }
       
-      Example format:
-      [
-        {"stewie": "How does this work?", "peter": "Well, it's like this..."},
-        {"stewie": "But what about...?", "peter": "Oh, that's easy..."}
-      ]
+      ${data.mediaFiles && data.mediaFiles.length > 0 ? 
+        `Example format (REQUIRED when images are uploaded):
+        [
+          {
+            "stewie": "How does this work?", 
+            "peter": "Well, look at this image here. You can see exactly what I mean...",
+            "imageOverlays": [
+              {
+                "filename": "${data.mediaFiles[0].filename}",
+                "startTime": 1.0,
+                "duration": 4.0,
+                "description": "Shows when Peter references the uploaded image"
+              }
+            ]
+          },
+          {"stewie": "But what about...?", "peter": "Oh, that's easy..."}
+        ]` :
+        `Example format:
+        [
+          {
+            "stewie": "How does this work?", 
+            "peter": "Well, it's like this...",
+            "imageOverlays": [
+              {
+                "filename": "example.jpg",
+                "startTime": 2.5,
+                "duration": 3.0,
+                "description": "Shows when Peter mentions the example"
+              }
+            ]
+          },
+          {"stewie": "But what about...?", "peter": "Oh, that's easy..."}
+        ]`
+      }
+      
+      For imageOverlays:
+      - startTime: seconds from the beginning of that conversation turn when image should appear
+      - duration: how long in seconds the image should be visible
+      - filename: exact filename of the uploaded image to show
+      - description: brief explanation of why this image is shown at this moment
       Avoid making family guy references, and try to just make so that Peter gives a good answer to Stewie's question using funny examples. 
      Both Stewie and Peter should use simple terms and words. Their sentences should be brief and stewie should start with a question on the topic.
      Do not use special characters or emojis. Because using "*" for example will make the voice say "asterisk", we do not want that.
@@ -41,9 +105,29 @@ export async function POST(request: Request) {
     `;
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
+    
+    // Prepare content array with prompt and media files
+    const content: any[] = [prompt];
+    
+    // Add media files to the content
+    if (data.mediaFiles && data.mediaFiles.length > 0) {
+      for (const mediaFile of data.mediaFiles) {
+        if (mediaFile.type === 'image') {
+          content.push({
+            inlineData: {
+              data: mediaFile.data,
+              mimeType: mediaFile.mimeType
+            }
+          });
+        }
+      }
+    }
+    
+    const result = await model.generateContent(content);
+    const response = result.response;
     let text = response.text();
+    
+    // Log raw AI response to check for image overlay data
     
     // Clean up the text more thoroughly
     text = text.replace(/```json\n?/g, '').replace(/```/g, '').trim();
@@ -67,6 +151,14 @@ export async function POST(request: Request) {
       for (const turn of conversation) {
         if (!turn.stewie || !turn.peter) {
           throw new Error("Invalid conversation format");
+        }
+      }
+      
+      // Check if imageOverlays are included when media files were provided
+      if (data.mediaFiles && data.mediaFiles.length > 0) {
+        const hasImageOverlays = conversation.some(turn => turn.imageOverlays && turn.imageOverlays.length > 0);
+        if (!hasImageOverlays) {
+          console.log('⚠️ WARNING: Images were uploaded but no imageOverlays found in conversation');
         }
       }
       

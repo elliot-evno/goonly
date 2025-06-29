@@ -13,16 +13,17 @@ import { createFinalVideo } from './services/video';
 
 export async function POST(request: Request) {
   const startTime = Date.now();
-  console.log('🚀 Starting video generation...');
   
   try {
-    const { conversation }: { conversation: ConversationTurn[] } = await request.json();
+    const { conversation, mediaFiles }: { 
+      conversation: ConversationTurn[], 
+      mediaFiles?: Array<{ data: string; mimeType: string; filename: string; type: string }>
+    } = await request.json();
     
     if (!conversation || conversation.length === 0) {
       throw new Error('No conversation provided');
     }
     
-    console.log(`📝 Processing conversation with ${conversation.length} turns`);
     
     // Setup temp directory
     const sessionId = Date.now().toString();
@@ -31,8 +32,20 @@ export async function POST(request: Request) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
+    // Save uploaded media files to temp directory
+    const savedMediaFiles: { [filename: string]: string } = {};
+    if (mediaFiles && mediaFiles.length > 0) {
+      for (const mediaFile of mediaFiles) {
+        if (mediaFile.type === 'image') {
+          const buffer = Buffer.from(mediaFile.data, 'base64');
+          const filepath = path.join(tempDir, mediaFile.filename);
+          await fs.promises.writeFile(filepath, buffer);
+          savedMediaFiles[mediaFile.filename] = filepath;
+        }
+      }
+    }
+
     // OPTIMIZATION 1: TRUE sequential batch audio generation (prevent RVC server overload)
-    console.log('🎵 Generating audio in sequential batches...');
     const audioResults: AudioResult[] = [];
     const BATCH_SIZE = 2; // Process 2 at a time to avoid overwhelming TTS server
     
@@ -46,7 +59,6 @@ export async function POST(request: Request) {
     // Process tasks in small batches with delays
     for (let i = 0; i < audioTasks.length; i += BATCH_SIZE) {
       const batch = audioTasks.slice(i, i + BATCH_SIZE);
-      console.log(`🎤 Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(audioTasks.length/BATCH_SIZE)}: ${batch.length} audio files`);
       
       // Generate this batch in parallel (small batch is safe)
       const batchPromises = batch.map(task => 
@@ -56,16 +68,12 @@ export async function POST(request: Request) {
       const batchResults = await Promise.all(batchPromises);
       audioResults.push(...batchResults);
       
-      console.log(`✅ Batch ${Math.floor(i/BATCH_SIZE) + 1} complete`);
-      
       // Add delay between batches to let TTS server recover
       if (i + BATCH_SIZE < audioTasks.length) {
-        console.log('⏳ Waiting 2 seconds before next batch...');
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
     
-    console.log(`✅ Generated ${audioResults.length} audio files`);
     
     // Save audio files and build timeline
     const audioFiles: AudioFileData[] = [];
@@ -88,7 +96,6 @@ export async function POST(request: Request) {
       currentTime += audio.duration + GAP_DURATION;
     }
     
-    console.log('🎯 Creating precise word timeline with Whisper alignment...');
     const wordTimeline: WordTiming[] = [];
     const characterTimeline: Array<{ character: 'stewie' | 'peter'; startTime: number; endTime: number }> = [];
     
@@ -105,11 +112,9 @@ export async function POST(request: Request) {
       let wordTimings;
       try {
         wordTimings = await getWhisperWordTimings(audio.fileName, audio.text);
-        console.log(`🎯 Got precise Whisper timings for ${audio.character}: ${wordTimings.length} words`);
       } catch (error) {
         console.warn(`⚠️ Whisper failed for ${audio.character}, using improved estimation:`, error);
         wordTimings = estimateWordTiming(audio.text, audio.duration);
-        console.log(`📊 Using estimated timings for ${audio.character}: ${wordTimings.length} words`);
       }
       
       // Adjust timings to global timeline and add to word timeline
@@ -127,9 +132,40 @@ export async function POST(request: Request) {
     
     // OPTIMIZATION 3: Fix duration calculation 
     const totalDuration = currentTime - GAP_DURATION + 1; // Remove last gap, add buffer
-    console.log(`📏 Total video duration: ${totalDuration.toFixed(1)}s`);
-    console.log(`👥 Character timeline:`, characterTimeline.map(c => `${c.character}: ${c.startTime.toFixed(1)}s-${c.endTime.toFixed(1)}s`));
-    console.log(`📝 Word timeline:`, wordTimeline.slice(0, 5).map(w => `"${w.text}": ${w.startTime.toFixed(2)}s-${w.endTime.toFixed(2)}s (${w.character})`));
+
+    // Process image overlays from conversation
+    const imageOverlays: Array<{
+      imagePath: string;
+      startTime: number;
+      endTime: number;
+      description: string;
+    }> = [];
+    
+    let conversationIndex = 0;
+    for (const turn of conversation) {
+      if (turn.imageOverlays && turn.imageOverlays.length > 0) {
+        // Find the start time for this conversation turn
+        const turnStartTime = conversationIndex < audioFiles.length ? audioFiles[conversationIndex * 2]?.startTime || 0 : 0;
+        
+        for (const overlay of turn.imageOverlays) {
+          const imagePath = savedMediaFiles[overlay.filename];
+          if (imagePath && fs.existsSync(imagePath)) {
+            const globalStartTime = turnStartTime + overlay.startTime;
+            const globalEndTime = globalStartTime + overlay.duration;
+            
+            imageOverlays.push({
+              imagePath,
+              startTime: globalStartTime,
+              endTime: globalEndTime,
+              description: overlay.description
+            });
+            
+          }
+        }
+      }
+      conversationIndex++;
+    }
+    
 
     // File paths
     const outputPath = path.join(tempDir, 'output.mp4');
@@ -144,16 +180,12 @@ export async function POST(request: Request) {
     if (!fs.existsSync(peterImagePath)) throw new Error(`Peter image not found: ${peterImagePath}`);
 
     // Step 1: Create combined audio
-    console.log('🎶 Combining audio tracks...');
     const combinedAudioPath = await combineAudioFiles(audioFiles, tempDir);
 
     // Step 3: Create efficient ASS subtitles for word-by-word display (avoids FFmpeg filter limits)
-    console.log('📝 Creating word-by-word subtitles...');
     const subtitlePath = await createSubtitleFile(wordTimeline, tempDir);
-    console.log(`Created subtitle file with ${wordTimeline.length} word-by-word entries`);
 
     // Step 4: Create simplified video filter (characters + subtitles, NO hundreds of drawtext overlays)
-    console.log('🎥 Creating final video...');
     await createFinalVideo(
       videoPath,
       stewieImagePath,
@@ -162,7 +194,8 @@ export async function POST(request: Request) {
       subtitlePath,
       characterTimeline,
       totalDuration,
-      outputPath
+      outputPath,
+      imageOverlays
     );
 
     // Check if output file was created
@@ -178,6 +211,7 @@ export async function POST(request: Request) {
     // Cleanup temp files
     await Promise.all([
       ...audioFiles.map(audio => fs.promises.unlink(audio.fileName).catch(() => {})),
+      ...Object.values(savedMediaFiles).map(imagePath => fs.promises.unlink(imagePath).catch(() => {})),
       fs.promises.unlink(outputPath).catch(() => {}),
       fs.promises.unlink(combinedAudioPath).catch(() => {}),
       fs.promises.unlink(subtitlePath).catch(() => {})

@@ -1,6 +1,14 @@
+export interface ImageOverlay {
+  filename: string;
+  startTime: number;
+  duration: number;
+  description: string;
+}
+
 export interface ConversationTurn {
   stewie: string;
   peter: string;
+  imageOverlays?: ImageOverlay[];
 }
 
 export interface AudioResult {
