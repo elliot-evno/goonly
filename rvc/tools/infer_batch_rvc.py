@@ -2,7 +2,6 @@ import argparse
 import os
 import sys
 
-print("Command-line arguments:", sys.argv)
 
 now_dir = os.getcwd()
 sys.path.append(now_dir)

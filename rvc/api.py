@@ -1,3 +1,8 @@
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 from fastapi import FastAPI, Form, HTTPException, File, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +21,7 @@ try:
     WHISPER_AVAILABLE = True
 except ImportError:
     WHISPER_AVAILABLE = False
-    print("⚠️ whisper-timestamped not available. Install with: pip install whisper-timestamped")
+    pass
 
 # Import your RVC inference logic:
 from infer.modules.vc.modules import VC
@@ -148,7 +153,7 @@ async def generate_tts_audio(text: str, character: str, output_path: str) -> boo
             response = requests.post(url, json=data, headers=headers, timeout=30)
             try:
                 response.raise_for_status()
-            except Exception as e:
+            except Exception:
                 pass
             
             # Save to temporary MP3, then convert
@@ -165,7 +170,7 @@ async def generate_tts_audio(text: str, character: str, output_path: str) -> boo
                 return True
             finally:
                 cleanup_temp_files(mp3_path)
-        except Exception as e:
+        except Exception:
             # If ElevenLabs fails, we could add fallback logic here
             pass
     
@@ -221,11 +226,14 @@ async def tts_endpoint(text: str = Form(...), character: str = Form("peter")):
         
         
         # Return file response with background cleanup
+        async def cleanup_background():
+            cleanup_temp_files(tts_path, output_path)
+        
         return FileResponse(
             output_path,
             media_type="audio/wav",
             filename=f"{character}_voice.wav",
-            background=lambda: cleanup_temp_files(tts_path, output_path)
+            background=cleanup_background
         )
         
     except HTTPException:
@@ -323,7 +331,7 @@ async def whisper_timestamped_endpoint(
         # Clean up temp file
         try:
             os.unlink(temp_audio_path)
-        except Exception as e:
+        except Exception:
             pass
         return {"word_segments": word_segments}
         
@@ -333,6 +341,6 @@ async def whisper_timestamped_endpoint(
         if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
             try:
                 os.unlink(temp_audio_path)
-            except Exception as cleanup_error:
+            except Exception:
                 pass
         raise HTTPException(status_code=500, detail=f"Whisper timestamped processing failed: {str(e)}")

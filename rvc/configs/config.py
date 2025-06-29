@@ -16,9 +16,6 @@ try:
         ipex_init()
 except Exception:  # pylint: disable=broad-exception-caught
     pass
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 version_config_list = [
@@ -132,9 +129,7 @@ class Config:
                 strr = f.read().replace("true", "false")
             with open(f"configs/inuse/{config_file}", "w") as f:
                 f.write(strr)
-            logger.info("overwrite " + config_file)
         self.preprocess_per = 3.0
-        logger.info("overwrite preprocess_per to %d" % (self.preprocess_per))
 
     def device_config(self) -> tuple:
         if torch.cuda.is_available():
@@ -151,27 +146,23 @@ class Config:
                 or "1070" in self.gpu_name
                 or "1080" in self.gpu_name
             ):
-                logger.info("Found GPU %s, force to fp32", self.gpu_name)
                 self.is_half = False
                 self.use_fp32_config()
             else:
-                logger.info("Found GPU %s", self.gpu_name)
-            self.gpu_mem = int(
-                torch.cuda.get_device_properties(i_device).total_memory
-                / 1024
-                / 1024
-                / 1024
-                + 0.4
-            )
-            if self.gpu_mem <= 4:
-                self.preprocess_per = 3.0
+                self.gpu_mem = int(
+                    torch.cuda.get_device_properties(i_device).total_memory
+                    / 1024
+                    / 1024
+                    / 1024
+                    + 0.4
+                )
+                if self.gpu_mem <= 4:
+                    self.preprocess_per = 3.0
         elif self.has_mps():
-            logger.info("No supported Nvidia GPU found")
             self.device = self.instead = "mps"
             self.is_half = False
             self.use_fp32_config()
         else:
-            logger.info("No supported Nvidia GPU found")
             self.device = self.instead = "cpu"
             self.is_half = False
             self.use_fp32_config()
@@ -198,7 +189,6 @@ class Config:
             x_center = 30
             x_max = 32
         if self.dml:
-            logger.info("Use DirectML instead")
             if (
                 os.path.exists(
                     "runtime\Lib\site-packages\onnxruntime\capi\DirectML.dll"
@@ -226,7 +216,7 @@ class Config:
             self.is_half = False
         else:
             if self.instead:
-                logger.info(f"Use {self.instead} instead")
+                pass
             if (
                 os.path.exists(
                     "runtime\Lib\site-packages\onnxruntime\capi\onnxruntime_providers_cuda.dll"
@@ -247,8 +237,4 @@ class Config:
                     )
                 except:
                     pass
-        logger.info(
-            "Half-precision floating-point: %s, device: %s"
-            % (self.is_half, self.device)
-        )
         return x_pad, x_query, x_center, x_max

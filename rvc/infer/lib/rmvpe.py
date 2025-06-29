@@ -21,9 +21,6 @@ import torch.nn.functional as F
 from librosa.util import normalize, pad_center, tiny
 from scipy.signal import get_window
 
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 class STFT(torch.nn.Module):
@@ -552,10 +549,6 @@ class RMVPE:
 
             if use_jit:
                 if is_half and "cpu" in str(self.device):
-                    logger.warning(
-                        "Use default rmvpe model. \
-                                 Jit is not supported on the CPU for half floating point"
-                    )
                     self.model = get_default_model()
                 else:
                     self.model = get_jit_model()
@@ -667,4 +660,3 @@ if __name__ == "__main__":
     # f0 = rmvpe.infer_from_audio(audio, thred=thred)
     # f0 = rmvpe.infer_from_audio(audio, thred=thred)
     t1 = ttime()
-    logger.info("%s %.2f", f0.shape, t1 - t0)

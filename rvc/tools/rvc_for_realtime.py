@@ -87,7 +87,6 @@ class RVC:
             if index_rate != 0:
                 self.index = faiss.read_index(index_path)
                 self.big_npy = self.index.reconstruct_n(0, self.index.ntotal)
-                printt("Index search enabled")
             self.pth_path: str = pth_path
             self.index_path = index_path
             self.index_rate = index_rate
@@ -162,10 +161,6 @@ class RVC:
             def set_synthesizer():
                 if self.use_jit and not config.dml:
                     if self.is_half and "cpu" in str(self.device):
-                        printt(
-                            "Use default Synthesizer model. \
-                                    Jit is not supported on the CPU for half floating point"
-                        )
                         set_default_model()
                     else:
                         set_jit_model()
@@ -190,8 +185,7 @@ class RVC:
                 self.device_fcpe = last_rvc.device_fcpe
                 self.model_fcpe = last_rvc.model_fcpe
         except:
-            printt(traceback.format_exc())
-
+    
     def change_key(self, new_key):
         self.f0_up_key = new_key
 
@@ -314,7 +308,6 @@ class RVC:
         if hasattr(self, "model_rmvpe") == False:
             from infer.lib.rmvpe import RMVPE
 
-            printt("Loading rmvpe model")
             self.model_rmvpe = RMVPE(
                 "assets/rmvpe/rmvpe.pt",
                 is_half=self.is_half,
@@ -329,7 +322,6 @@ class RVC:
         if hasattr(self, "model_fcpe") == False:
             from torchfcpe import spawn_bundled_infer_model
 
-            printt("Loading fcpe model")
             if "privateuseone" in str(self.device):
                 self.device_fcpe = "cpu"
             else:
@@ -388,14 +380,9 @@ class RVC:
                         + (1 - self.index_rate) * feats[0][skip_head // 2 :]
                     )
                 else:
-                    printt(
-                        "Invalid index. You MUST use added_xxxx.index but not trained_xxxx.index!"
-                    )
             else:
-                printt("Index search FAILED or disabled")
         except:
             traceback.print_exc()
-            printt("Index search FAILED")
         t3 = ttime()
         p_len = input_wav.shape[0] // 160
         if self.if_f0 == 1:
@@ -435,11 +422,4 @@ class RVC:
                     feats, p_len, sid, skip_head, return_length
                 )
         t5 = ttime()
-        printt(
-            "Spent time: fea = %.3fs, index = %.3fs, f0 = %.3fs, model = %.3fs",
-            t2 - t1,
-            t3 - t2,
-            t4 - t3,
-            t5 - t4,
-        )
         return infered_audio.squeeze().float()

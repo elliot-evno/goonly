@@ -1,7 +1,4 @@
 import traceback
-import logging
-
-logger = logging.getLogger(__name__)
 
 import numpy as np
 import soundfile as sf
@@ -34,7 +31,6 @@ class VC:
         self.config = config
 
     def get_vc(self, sid, *to_return_protect):
-        logger.info("Get sid: " + sid)
 
         to_return_protect0 = {
             "visible": self.if_f0 != 0,
@@ -55,7 +51,6 @@ class VC:
             if (
                 self.hubert_model is not None
             ):  # 考虑到轮询, 需要加个判断看是否 sid 是由有模型切换到无模型的
-                logger.info("Clean model cache")
                 del (self.net_g, self.n_spk, self.hubert_model, self.tgt_sr)  # ,cpt
                 self.hubert_model = self.net_g = self.n_spk = self.hubert_model = (
                     self.tgt_sr
@@ -98,7 +93,6 @@ class VC:
                 "",
             )
         person = f'{os.getenv("weight_root")}/{sid}'
-        logger.info(f"Loading: {person}")
 
         self.cpt = torch.load(person, map_location="cpu")
         self.tgt_sr = self.cpt["config"][-1]
@@ -129,7 +123,6 @@ class VC:
         self.pipeline = Pipeline(self.tgt_sr, self.config)
         n_spk = self.cpt["config"][-3]
         index = {"value": get_index_path_from_model(sid), "__type__": "update"}
-        logger.info("Select index: " + index["value"])
 
         return (
             (
@@ -221,7 +214,6 @@ class VC:
             )
         except:
             info = traceback.format_exc()
-            logger.warning(info)
             return info, (None, None)
 
     def vc_multi(
