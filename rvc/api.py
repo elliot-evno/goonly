@@ -3,6 +3,12 @@ warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+# Suppress fairseq logging
+import logging
+logging.getLogger("fairseq").setLevel(logging.ERROR)
+logging.getLogger("fairseq.tasks.hubert_pretraining").setLevel(logging.ERROR)
+logging.getLogger("fairseq.models.hubert.hubert").setLevel(logging.ERROR)
+
 from fastapi import FastAPI, Form, HTTPException, File, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
