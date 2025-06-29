@@ -7,9 +7,9 @@ import {
   AudioFileData, 
   WordTiming
 } from './types';
-import { generateAudio, getWhisperWordTimings, combineAudioFiles, estimateWordTiming } from './services/audio';
-import { createSubtitleFile } from './services/subtitle';
-import { createFinalVideo } from './services/video';
+import { generateAudio, estimateWordTiming } from './services/audio';
+import { createSubtitleContent } from './services/subtitle';
+import { createFinalVideoWithBuffers } from './services/video';
 
 export async function POST(request: Request) {
   const startTime = Date.now();
@@ -24,32 +24,21 @@ export async function POST(request: Request) {
       throw new Error('No conversation provided');
     }
     
-    
-    // Setup temp directory
-    const sessionId = Date.now().toString();
-    const tempDir = path.join(process.cwd(), 'temp', sessionId);
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-
-    // Save uploaded media files to temp directory
-    const savedMediaFiles: { [filename: string]: string } = {};
+    // Process uploaded media files (keep as buffers)
+    const mediaBuffers: { [filename: string]: Buffer } = {};
     if (mediaFiles && mediaFiles.length > 0) {
       for (const mediaFile of mediaFiles) {
         if (mediaFile.type === 'image') {
           const buffer = Buffer.from(mediaFile.data, 'base64');
-          const filepath = path.join(tempDir, mediaFile.filename);
-          await fs.promises.writeFile(filepath, buffer);
-          savedMediaFiles[mediaFile.filename] = filepath;
+          mediaBuffers[mediaFile.filename] = buffer;
         }
       }
     }
 
-    // OPTIMIZATION 1: TRUE sequential batch audio generation (prevent RVC server overload)
+    // Generate audio in batches (keep as buffers)
     const audioResults: AudioResult[] = [];
-    const BATCH_SIZE = 2; // Process 2 at a time to avoid overwhelming TTS server
+    const BATCH_SIZE = 2;
     
-    // Create array of audio tasks
     const audioTasks: Array<{ text: string; character: 'stewie' | 'peter' }> = [];
     conversation.forEach(turn => {
       audioTasks.push({ text: turn.stewie, character: 'stewie' });
@@ -60,7 +49,6 @@ export async function POST(request: Request) {
     for (let i = 0; i < audioTasks.length; i += BATCH_SIZE) {
       const batch = audioTasks.slice(i, i + BATCH_SIZE);
       
-      // Generate this batch in parallel (small batch is safe)
       const batchPromises = batch.map(task => 
         generateAudio(task.text, task.character, 3)
       );
@@ -68,25 +56,21 @@ export async function POST(request: Request) {
       const batchResults = await Promise.all(batchPromises);
       audioResults.push(...batchResults);
       
-      // Add delay between batches to let TTS server recover
       if (i + BATCH_SIZE < audioTasks.length) {
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
     
-    
-    // Save audio files and build timeline
-    const audioFiles: AudioFileData[] = [];
-    const GAP_DURATION = 0.2; // 200ms between speakers
+    // Build audio timeline (no file writing)
+    const audioData: AudioFileData[] = [];
+    const GAP_DURATION = 0.2;
     let currentTime = 0;
     
     for (let i = 0; i < audioResults.length; i++) {
       const audio = audioResults[i];
-      const fileName = path.join(tempDir, `audio_${i}.wav`);
-      await fs.promises.writeFile(fileName, audio.buffer);
       
-      audioFiles.push({
-        fileName,
+      audioData.push({
+        buffer: audio.buffer,
         character: audio.character,
         text: audio.text,
         duration: audio.duration,
@@ -99,27 +83,19 @@ export async function POST(request: Request) {
     const wordTimeline: WordTiming[] = [];
     const characterTimeline: Array<{ character: 'stewie' | 'peter'; startTime: number; endTime: number }> = [];
     
-    // Process each audio file for precise word timing
-    for (const audio of audioFiles) {
-      // Create character timeline for overlays
+    // Process each audio for word timing (without writing files)
+    for (const audio of audioData) {
       characterTimeline.push({
         character: audio.character,
         startTime: audio.startTime,
         endTime: audio.startTime + audio.duration
       });
       
-      // Get precise word timings using Whisper forced alignment with fallback
-      let wordTimings;
-      try {
-        wordTimings = await getWhisperWordTimings(audio.fileName, audio.text);
-      } catch (error) {
-        console.warn(`⚠️ Whisper failed for ${audio.character}, using improved estimation:`, error);
-        wordTimings = estimateWordTiming(audio.text, audio.duration);
-      }
+      // Use estimation for word timing to avoid file operations
+      const wordTimings = estimateWordTiming(audio.text, audio.duration);
       
-      // Adjust timings to global timeline and add to word timeline
       wordTimings.forEach((wordTiming: { word: string; start: number; end: number; }) => {
-        if (wordTiming.word.trim()) { // Skip empty words
+        if (wordTiming.word.trim()) {
           wordTimeline.push({
             text: wordTiming.word,
             startTime: audio.startTime + wordTiming.start,
@@ -130,12 +106,11 @@ export async function POST(request: Request) {
       });
     }
     
-    // OPTIMIZATION 3: Fix duration calculation 
-    const totalDuration = currentTime - GAP_DURATION + 1; // Remove last gap, add buffer
+    const totalDuration = currentTime - GAP_DURATION + 1;
 
-    // Process image overlays from conversation
+    // Process image overlays
     const imageOverlays: Array<{
-      imagePath: string;
+      buffer: Buffer;
       startTime: number;
       endTime: number;
       description: string;
@@ -144,32 +119,27 @@ export async function POST(request: Request) {
     let conversationIndex = 0;
     for (const turn of conversation) {
       if (turn.imageOverlays && turn.imageOverlays.length > 0) {
-        // Find the start time for this conversation turn
-        const turnStartTime = conversationIndex < audioFiles.length ? audioFiles[conversationIndex * 2]?.startTime || 0 : 0;
+        const turnStartTime = conversationIndex < audioData.length ? audioData[conversationIndex * 2]?.startTime || 0 : 0;
         
         for (const overlay of turn.imageOverlays) {
-          const imagePath = savedMediaFiles[overlay.filename];
-          if (imagePath && fs.existsSync(imagePath)) {
+          const buffer = mediaBuffers[overlay.filename];
+          if (buffer) {
             const globalStartTime = turnStartTime + overlay.startTime;
             const globalEndTime = globalStartTime + overlay.duration;
             
             imageOverlays.push({
-              imagePath,
+              buffer,
               startTime: globalStartTime,
               endTime: globalEndTime,
               description: overlay.description
             });
-            
           }
         }
       }
       conversationIndex++;
     }
-    
 
-    // File paths
-    const outputPath = path.join(tempDir, 'output.mp4');
-    
+    // Required file paths (these exist in the filesystem)
     const videoPath = path.join(process.cwd(), 'public', 'content', 'subwaysurfers.mp4');
     const stewieImagePath = path.join(process.cwd(), 'public', 'content', 'stewie.png');
     const peterImagePath = path.join(process.cwd(), 'public', 'content', 'peter.png');
@@ -179,47 +149,24 @@ export async function POST(request: Request) {
     if (!fs.existsSync(stewieImagePath)) throw new Error(`Stewie image not found: ${stewieImagePath}`);
     if (!fs.existsSync(peterImagePath)) throw new Error(`Peter image not found: ${peterImagePath}`);
 
-    // Step 1: Create combined audio
-    const combinedAudioPath = await combineAudioFiles(audioFiles, tempDir);
+    // Create subtitle content (only write to /tmp if needed)
+    const subtitleContent = createSubtitleContent(wordTimeline);
 
-    // Step 3: Create efficient ASS subtitles for word-by-word display (avoids FFmpeg filter limits)
-    const subtitlePath = await createSubtitleFile(wordTimeline, tempDir);
-
-    // Step 4: Create simplified video filter (characters + subtitles, NO hundreds of drawtext overlays)
-    await createFinalVideo(
+    // Create final video with buffers
+    const videoBuffer = await createFinalVideoWithBuffers(
       videoPath,
       stewieImagePath,
       peterImagePath,
-      combinedAudioPath,
-      subtitlePath,
+      audioData,
+      subtitleContent,
       characterTimeline,
       totalDuration,
-      outputPath,
       imageOverlays
     );
 
-    // Check if output file was created
-    if (!fs.existsSync(outputPath)) {
-      throw new Error('Output video file was not created');
-    }
-
-    // Read the output file
-    const videoBuffer = await fs.promises.readFile(outputPath);
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`🎉 Video created successfully in ${totalTime}s! Size: ${(videoBuffer.length / 1024 / 1024).toFixed(1)}MB`);
     
-    // Cleanup temp files
-    await Promise.all([
-      ...audioFiles.map(audio => fs.promises.unlink(audio.fileName).catch(() => {})),
-      ...Object.values(savedMediaFiles).map(imagePath => fs.promises.unlink(imagePath).catch(() => {})),
-      fs.promises.unlink(outputPath).catch(() => {}),
-      fs.promises.unlink(combinedAudioPath).catch(() => {}),
-      fs.promises.unlink(subtitlePath).catch(() => {})
-    ]);
-
-    // Remove temp directory
-    await fs.promises.rmdir(tempDir).catch(() => {});
-
     return new NextResponse(videoBuffer, {
       headers: {
         'Content-Type': 'video/mp4',

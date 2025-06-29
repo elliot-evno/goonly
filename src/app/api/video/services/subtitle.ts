@@ -1,10 +1,6 @@
-import fs from 'fs';
-import path from 'path';
 import { WordTiming } from '../types';
 
-export async function createSubtitleFile(wordTimeline: WordTiming[], tempDir: string): Promise<string> {
-  const subtitlePath = path.join(tempDir, 'subtitles.ass');
-  
+export function createSubtitleContent(wordTimeline: WordTiming[]): string {
   const assHeader = `[Script Info]
 Title: Peter and Stewie Conversation
 ScriptType: v4.00+
@@ -36,10 +32,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return `Dialogue: 0,${startTime},${endTime},${style},,0,0,500,,${animatedText}`;
   }).join('\n');
 
-  const assContent = assHeader + assEvents;
-  await fs.promises.writeFile(subtitlePath, assContent);
-  
-  return subtitlePath;
+  return assHeader + assEvents;
 }
 
 function formatAssTime(seconds: number): string {
