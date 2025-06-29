@@ -7,7 +7,6 @@ import tempfile
 import subprocess
 from scipy.io import wavfile
 import requests
-import logging
 import uuid
 from dotenv import load_dotenv
 
@@ -28,9 +27,6 @@ load_dotenv()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Global variables for models (will be loaded on first request)
 models = {}
@@ -65,9 +61,8 @@ def cleanup_temp_files(*file_paths):
         try:
             if file_path and os.path.exists(file_path):
                 os.unlink(file_path)
-                logger.debug(f"Cleaned up temp file: {file_path}")
         except Exception as e:
-            logger.warning(f"Could not delete temp file {file_path}: {e}")
+            pass
 
 def load_model(character: str):
     """Load the RVC model for the specified character if not already loaded"""
@@ -77,7 +72,6 @@ def load_model(character: str):
         raise ValueError(f"Unknown character: {character}. Available: {list(MODEL_CONFIG.keys())}")
     
     if character not in models:
-        logger.info(f"Loading model for character: {character}")
         
         # Override sys.argv to prevent argument parsing conflicts
         original_argv = sys.argv.copy()
@@ -99,10 +93,8 @@ def load_model(character: str):
             vc.get_vc(MODEL_CONFIG[character]["model_path"])
             models[character] = vc
             
-            logger.info(f"Successfully loaded model for character: {character}")
             
         except Exception as e:
-            logger.error(f"Failed to load model for character {character}: {e}")
             raise
         finally:
             # Restore original argv and working directory
@@ -115,78 +107,71 @@ def load_whisper_model():
     """Load the Whisper model for word-level timing if not already loaded"""
     global whisper_model
     
-    logger.info("Checking whisper model status...")
     
     if not WHISPER_AVAILABLE:
-        logger.error("whisper-timestamped is not installed")
         raise RuntimeError("whisper-timestamped is not installed. Install with: pip install whisper-timestamped")
     
     if whisper_model is None:
-        logger.info("Whisper model not loaded, loading now...")
         try:
-            logger.info("Calling whisper.load_model('small', device='cpu')...")
             # Use small model for balance of speed and accuracy
             whisper_model = whisper.load_model("small", device="cpu")
-            logger.info("✅ Whisper model loaded successfully!")
         except Exception as e:
-            logger.error(f"Failed to load Whisper model: {type(e).__name__}: {e}")
-            logger.error("Whisper model loading traceback:", exc_info=True)
-            raise
-    else:
-        logger.info("Whisper model already loaded, reusing existing model")
-            
+            raise e
     return whisper_model
 
 async def generate_tts_audio(text: str, character: str, output_path: str) -> bool:
     """Generate TTS audio with fallback chain"""
     request_id = str(uuid.uuid4())[:8]
-    logger.info(f"[{request_id}] Starting TTS generation for character: {character}")
     
     # First attempt: ElevenLabs via direct API
-    try:
-        logger.info(f"[{request_id}] Attempting ElevenLabs TTS...")
-        
-        voice_id = ELEVENLABS_VOICE_ID
-        api_key = ELEVENLABS_API_KEY
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-        
-        headers = {
-            "Accept": "audio/mpeg",
-            "Content-Type": "application/json",
-            "xi-api-key": api_key
-        }
-        
-        data = {
-            "text": text,
-            "model_id": "eleven_monolingual_v1",
-            "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.5
-            }
-        }
-        
-        response = requests.post(url, json=data, headers=headers, timeout=30)
-        response.raise_for_status()
-        
-        # Save to temporary MP3, then convert
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as mp3_file:
-            mp3_path = mp3_file.name
-            mp3_file.write(response.content)
-        
+    if ELEVENLABS_VOICE_ID and ELEVENLABS_API_KEY:
         try:
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", mp3_path, output_path], 
-                check=True, 
-                capture_output=True
-            )
-            logger.info(f"[{request_id}] ✅ ElevenLabs TTS successful")
-            return True
-        finally:
-            cleanup_temp_files(mp3_path)
+            voice_id = ELEVENLABS_VOICE_ID
+            api_key = ELEVENLABS_API_KEY
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             
-    except Exception as e:
-        logger.warning(f"[{request_id}] ElevenLabs failed: {e}")
+            headers = {
+                "Accept": "audio/mpeg",
+                "Content-Type": "application/json",
+                "xi-api-key": api_key
+            }
+            
+            data = {
+                "text": text,
+                "model_id": "eleven_monolingual_v1",
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.5
+                }
+            }
+            
+            response = requests.post(url, json=data, headers=headers, timeout=30)
+            try:
+                response.raise_for_status()
+            except Exception as e:
+                pass
+            
+            # Save to temporary MP3, then convert
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as mp3_file:
+                mp3_path = mp3_file.name
+                mp3_file.write(response.content)
+            
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", mp3_path, output_path], 
+                    check=True, 
+                    capture_output=True
+                )
+                return True
+            finally:
+                cleanup_temp_files(mp3_path)
+        except Exception as e:
+            # If ElevenLabs fails, we could add fallback logic here
+            pass
     
+    # If we reach here, TTS generation failed
+    return False
+
 
 @app.post("/tts/")
 async def tts_endpoint(text: str = Form(...), character: str = Form("peter")):
@@ -203,7 +188,6 @@ async def tts_endpoint(text: str = Form(...), character: str = Form("peter")):
             detail=f"Unknown character: {character}. Available: {list(MODEL_CONFIG.keys())}"
         )
     
-    logger.info(f"[{request_id}] Processing TTS request for character: {character}")
     
     # Create temporary files
     tts_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -226,7 +210,6 @@ async def tts_endpoint(text: str = Form(...), character: str = Form("peter")):
         if not tts_success:
             raise HTTPException(status_code=500, detail="All TTS services failed")
         
-        logger.info(f"[{request_id}] Applying RVC voice conversion...")
         
         # Apply RVC voice conversion
         _, wav_opt = model.vc_single(
@@ -236,7 +219,6 @@ async def tts_endpoint(text: str = Form(...), character: str = Form("peter")):
         # Write the converted audio
         wavfile.write(output_path, wav_opt[0], wav_opt[1])
         
-        logger.info(f"[{request_id}] ✅ TTS processing complete")
         
         # Return file response with background cleanup
         return FileResponse(
@@ -252,7 +234,6 @@ async def tts_endpoint(text: str = Form(...), character: str = Form("peter")):
         raise
     except Exception as e:
         # Handle unexpected errors
-        logger.error(f"[{request_id}] Unexpected error: {e}")
         cleanup_temp_files(tts_path, output_path)
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -280,51 +261,35 @@ async def whisper_timestamped_endpoint(
     """Generate CapCut-style word-level timestamps using whisper-timestamped"""
     request_id = str(uuid.uuid4())[:8]
     
-    logger.info(f"[{request_id}] Starting whisper-timestamped request")
-    logger.info(f"[{request_id}] Audio filename: {audio.filename}, Content-Type: {audio.content_type}")
-    logger.info(f"[{request_id}] Text length: {len(text)} chars, Preview: {text[:50]}...")
     
     if not WHISPER_AVAILABLE:
-        logger.error(f"[{request_id}] Whisper not available - whisper-timestamped not installed")
         raise HTTPException(
             status_code=500, 
             detail="whisper-timestamped is not installed. Install with: pip install whisper-timestamped"
         )
     
     if not text.strip():
-        logger.error(f"[{request_id}] Empty text provided")
         raise HTTPException(status_code=400, detail="Text cannot be empty")
     
     temp_audio_path = None
     
     try:
-        logger.info(f"[{request_id}] Creating temporary file...")
         # Save uploaded audio to temp file
         temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         temp_audio_path = temp_file.name
-        logger.info(f"[{request_id}] Temp file created: {temp_audio_path}")
         
-        logger.info(f"[{request_id}] Reading uploaded audio content...")
         audio_content = await audio.read()
-        logger.info(f"[{request_id}] Audio content size: {len(audio_content)} bytes")
         
-        logger.info(f"[{request_id}] Writing audio to temp file...")
         temp_file.write(audio_content)
         temp_file.close()
-        logger.info(f"[{request_id}] Audio written to temp file successfully")
         
         # Load Whisper model
-        logger.info(f"[{request_id}] Loading Whisper model...")
         model = load_whisper_model()
-        logger.info(f"[{request_id}] Whisper model loaded successfully")
         
-        logger.info(f"[{request_id}] Loading audio data with whisper.load_audio...")
         # Load audio and transcribe with word-level timestamps
         audio_data = whisper.load_audio(temp_audio_path)
-        logger.info(f"[{request_id}] Audio data loaded, shape/length: {len(audio_data) if hasattr(audio_data, '__len__') else 'unknown'}")
         
         # Use whisper-timestamped for accurate word timing
-        logger.info(f"[{request_id}] Starting whisper transcription with word timestamps...")
         try:
             # Use whisper-timestamped's transcribe function (not transcribe_timestamped)
             # The API is: whisper.transcribe(model, audio, **kwargs)
@@ -334,21 +299,15 @@ async def whisper_timestamped_endpoint(
                 language="en",  # You can make this configurable
                 verbose=False
             )
-            logger.info(f"[{request_id}] Whisper transcription completed successfully")
         except Exception as e:
-            logger.error(f"[{request_id}] Whisper transcription failed: {str(e)}")
             raise
         
-        logger.info(f"[{request_id}] Result keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
-        logger.info(f"[{request_id}] Generated {len(result.get('segments', []))} segments")
         
         # Extract word segments from whisper-timestamped format
         word_segments = []
         
         if "segments" in result:
-            logger.info(f"[{request_id}] Processing {len(result['segments'])} segments for word extraction")
             for i, segment in enumerate(result["segments"]):
-                logger.info(f"[{request_id}] Segment {i} keys: {list(segment.keys()) if isinstance(segment, dict) else 'not a dict'}")
                 
                 # whisper-timestamped puts words directly in segments
                 if "words" in segment and segment["words"]:
@@ -359,35 +318,21 @@ async def whisper_timestamped_endpoint(
                                 "start": word_data.get("start", 0),
                                 "end": word_data.get("end", 0)
                             })
-                else:
-                    logger.warning(f"[{request_id}] Segment {i} has no 'words' key or empty words")
-        else:
-            logger.error(f"[{request_id}] Result has no 'segments' key")
-        
-        logger.info(f"[{request_id}] Extracted {len(word_segments)} word segments")
+
         
         # Clean up temp file
         try:
             os.unlink(temp_audio_path)
-            logger.info(f"[{request_id}] Temp file cleaned up successfully")
         except Exception as e:
-            logger.warning(f"[{request_id}] Could not delete temp file {temp_audio_path}: {e}")
-        
+            pass
         return {"word_segments": word_segments}
         
     except Exception as e:
-        logger.error(f"[{request_id}] Exception occurred: {type(e).__name__}: {str(e)}")
-        logger.error(f"[{request_id}] Exception traceback:")
-        import traceback
-        logger.error(traceback.format_exc())
         
         # Clean up temp file on error only if it still exists
         if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
             try:
                 os.unlink(temp_audio_path)
-                logger.info(f"[{request_id}] Temp file cleaned up after error")
             except Exception as cleanup_error:
-                logger.warning(f"[{request_id}] Could not delete temp file after error: {cleanup_error}")
-        
-        logger.error(f"[{request_id}] Returning 500 error to client")
+                pass
         raise HTTPException(status_code=500, detail=f"Whisper timestamped processing failed: {str(e)}")
