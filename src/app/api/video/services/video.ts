@@ -59,9 +59,7 @@ export async function createFinalVideo(
     '-i', audioPath
   ];
 
-  // Add image overlay inputs
-  const imageInputs: string[] = [];
-  const imageFilterChain: string[] = [];
+const imageFilterChain: string[] = [];
   if (imageOverlays && imageOverlays.length > 0) {
     imageOverlays.forEach((overlay, index) => {
       inputs.push('-i', overlay.imagePath);
