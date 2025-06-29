@@ -15,7 +15,7 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes
       
-      const response = await fetch('http://localhost:8000/tts/', {
+      const response = await fetch('http://goonly.norrevik.ai/tts/', {
         method: 'POST',
         body: formData,
         signal: controller.signal
@@ -89,7 +89,7 @@ export async function getWhisperWordTimings(audioPath: string, text: string): Pr
     formData.append('audio', audioBlob, 'audio.wav');
     formData.append('text', text);
     
-    const response = await fetch('http://localhost:8000/whisper-timestamped/', {
+    const response = await fetch('http://goonly.norrevik.ai/whisper-timestamped/', {
       method: 'POST',
       body: formData,
     });
