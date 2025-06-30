@@ -7,16 +7,22 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
   
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const formData = new FormData();
-      formData.append('text', text);
-      formData.append('character', character);
+      const params = new URLSearchParams();
+      params.append('text', text);
+      params.append('character', character);
       
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 120000);
-      
-      const response = await fetch('http://goonly.norrevik.ai/tts/', {
+      const url = process.env.NODE_ENV === 'development' 
+        ? 'http://localhost:8000/' 
+        : 'https://goonly.norrevik.ai/';
+
+      const response = await fetch(url + 'tts/', {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: params.toString(),
         signal: controller.signal
       });
       
@@ -69,7 +75,6 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
       }
       
       const waitTime = Math.pow(2, attempt + 1) * 1000;
-      console.log(`⏳ Waiting ${waitTime/1000}s before retry...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
   }
@@ -86,8 +91,12 @@ export async function getWhisperWordTimings(audioPath: string, text: string): Pr
     
     formData.append('audio', audioBlob, 'audio.wav');
     formData.append('text', text);
+    const url = process.env.NODE_ENV === 'development' 
+      ? 'http://localhost:8000/' 
+      : 'https://goonly.norrevik.ai/';
+      
     
-    const response = await fetch('http://goonly.norrevik.ai/whisper-timestamped/', {
+    const response = await fetch(url + 'whisper-timestamped/', {
       method: 'POST',
       body: formData,
     });
