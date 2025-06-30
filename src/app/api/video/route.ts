@@ -7,7 +7,7 @@ import {
   AudioFileData, 
   WordTiming
 } from './types';
-import { generateAudio, estimateWordTiming, getWhisperWordTimings } from './services/audio';
+import { generateAudio, getWhisperWordTimings } from './services/audio';
 import { createSubtitleContent } from './services/subtitle';
 import { createFinalVideoWithBuffers } from './services/video';
 
