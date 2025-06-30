@@ -82,23 +82,39 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
   throw new Error(`Failed to generate ${character} speech`);
 }
 
-export async function getWhisperWordTimings(audioPath: string, text: string): Promise<Array<{word: string, start: number, end: number}>> {
+export async function getWhisperWordTimings(audioBuffer: Buffer, text: string): Promise<Array<{word: string, start: number, end: number}>> {
   try {
+    // Create multipart form data manually for Node.js
+    const boundary = `----formdata-node-${Date.now()}`;
+    const chunks: Buffer[] = [];
     
-    const formData = new FormData();
-    const audioBuffer = await fs.promises.readFile(audioPath);
-    const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' });
+    // Add text field
+    chunks.push(Buffer.from(`--${boundary}\r\n`));
+    chunks.push(Buffer.from(`Content-Disposition: form-data; name="text"\r\n\r\n`));
+    chunks.push(Buffer.from(`${text}\r\n`));
     
-    formData.append('audio', audioBlob, 'audio.wav');
-    formData.append('text', text);
+    // Add audio file field
+    chunks.push(Buffer.from(`--${boundary}\r\n`));
+    chunks.push(Buffer.from(`Content-Disposition: form-data; name="audio"; filename="audio.wav"\r\n`));
+    chunks.push(Buffer.from(`Content-Type: audio/wav\r\n\r\n`));
+    chunks.push(audioBuffer);
+    chunks.push(Buffer.from(`\r\n`));
+    
+    // End boundary
+    chunks.push(Buffer.from(`--${boundary}--\r\n`));
+    
+    const body = Buffer.concat(chunks);
+    
     const url = process.env.NODE_ENV === 'development' 
       ? 'http://localhost:8000/' 
       : 'https://goonly.norrevik.ai/';
-      
     
     const response = await fetch(url + 'whisper-timestamped/', {
       method: 'POST',
-      body: formData,
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body: body,
     });
     
     if (!response.ok) {
@@ -119,18 +135,11 @@ export async function getWhisperWordTimings(audioPath: string, text: string): Pr
     
   } catch (error) {
     console.warn(`⚠️ Whisper-timestamped failed, falling back to improved estimation:`, error);
-    return estimateWordTiming(text, await getAudioDuration(audioPath));
+    return estimateWordTiming(text, 3.0); // Use fallback duration
   }
 }
 
-async function getAudioDuration(audioPath: string): Promise<number> {
-  return new Promise<number>((resolve) => {
-    ffmpeg.ffprobe(audioPath, (err: Error | null, metadata: { format: { duration?: number } }) => {
-      if (err) resolve(3.0); // Fallback duration
-      else resolve(metadata.format.duration || 3.0);
-    });
-  });
-}
+
 
 export function estimateWordTiming(text: string, duration: number): Array<{word: string, start: number, end: number}> {
   const words = text.split(' ').filter(word => word.trim() !== '');

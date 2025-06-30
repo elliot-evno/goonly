@@ -7,7 +7,7 @@ import {
   AudioFileData, 
   WordTiming
 } from './types';
-import { generateAudio, estimateWordTiming } from './services/audio';
+import { generateAudio, estimateWordTiming, getWhisperWordTimings } from './services/audio';
 import { createSubtitleContent } from './services/subtitle';
 import { createFinalVideoWithBuffers } from './services/video';
 
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
     const wordTimeline: WordTiming[] = [];
     const characterTimeline: Array<{ character: 'stewie' | 'peter'; startTime: number; endTime: number }> = [];
     
-    // Process each audio for word timing (without writing files)
+    // Process each audio for word timing using Whisper
     for (const audio of audioData) {
       characterTimeline.push({
         character: audio.character,
@@ -91,8 +91,8 @@ export async function POST(request: Request) {
         endTime: audio.startTime + audio.duration
       });
       
-      // Use estimation for word timing to avoid file operations
-      const wordTimings = estimateWordTiming(audio.text, audio.duration);
+      // Use Whisper for accurate word timing
+      const wordTimings = await getWhisperWordTimings(audio.buffer, audio.text);
       
       wordTimings.forEach((wordTiming: { word: string; start: number; end: number; }) => {
         if (wordTiming.word.trim()) {
