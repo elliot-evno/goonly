@@ -50,8 +50,8 @@ echo 📡 Tunnel will be available at: https://goonly.norrevik.ai/tts/
 echo ⚠️  Make sure your RVC API is running on localhost:8000
 echo.
 
-REM Start the tunnel with the exact command specified
-%CLOUDFLARED_PATH% tunnel run --token "%TUNNEL_TOKEN%" --protocol h2mux --max-upstream-conns 5 --retries 3
+REM Start the tunnel with the current cloudflared syntax
+%CLOUDFLARED_PATH% tunnel run --token "%TUNNEL_TOKEN%"
 
 echo.
 echo ❌ Tunnel stopped or encountered an error
