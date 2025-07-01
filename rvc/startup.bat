@@ -27,6 +27,97 @@ if not "%MAJOR%.%MINOR%"=="3.10" (
     timeout /t 3 >nul
 )
 
+REM Check if ffmpeg is available
+echo 🔍 Checking for ffmpeg...
+ffmpeg -version >nul 2>&1
+if errorlevel 1 (
+    echo ❌ ffmpeg not found. Attempting to install...
+    
+    REM Try chocolatey first
+    choco --version >nul 2>&1
+    if not errorlevel 1 (
+        echo 📦 Installing ffmpeg via chocolatey...
+        choco install ffmpeg -y
+        if not errorlevel 1 (
+            echo ✅ ffmpeg installed successfully via chocolatey
+        ) else (
+            echo ❌ Failed to install ffmpeg via chocolatey
+            goto :manual_ffmpeg
+        )
+    ) else (
+        echo ⚠️ Chocolatey not found, trying manual installation...
+        goto :manual_ffmpeg
+    )
+) else (
+    echo ✅ ffmpeg is already installed
+)
+
+goto :continue_setup
+
+:manual_ffmpeg
+echo 📥 Downloading ffmpeg manually...
+if not exist "ffmpeg" mkdir ffmpeg
+cd ffmpeg
+
+REM Check if ffmpeg.exe already exists
+if exist "ffmpeg.exe" (
+    echo ✅ ffmpeg.exe already exists in local directory
+    set "PATH=%CD%;%PATH%"
+    cd ..
+    goto :continue_setup
+)
+
+REM Download ffmpeg for Windows
+powershell -Command "& {[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile 'ffmpeg.zip'}"
+
+if exist "ffmpeg.zip" (
+    echo 📦 Extracting ffmpeg...
+    powershell -Command "Expand-Archive -Path 'ffmpeg.zip' -DestinationPath '.' -Force"
+    
+    REM Find the extracted directory and move ffmpeg.exe
+    for /d %%d in (ffmpeg-master-latest-win64-gpl) do (
+        if exist "%%d\bin\ffmpeg.exe" (
+            copy "%%d\bin\ffmpeg.exe" "ffmpeg.exe" >nul
+            copy "%%d\bin\ffprobe.exe" "ffprobe.exe" >nul
+            rmdir /s /q "%%d" >nul 2>&1
+        )
+    )
+    
+    del "ffmpeg.zip" >nul 2>&1
+    
+    if exist "ffmpeg.exe" (
+        echo ✅ ffmpeg installed successfully
+        set "PATH=%CD%;%PATH%"
+    ) else (
+        echo ❌ Failed to extract ffmpeg
+        echo Please install ffmpeg manually and add it to your PATH
+        echo Download from: https://ffmpeg.org/download.html
+        pause
+        exit /b 1
+    )
+) else (
+    echo ❌ Failed to download ffmpeg
+    echo Please install ffmpeg manually and add it to your PATH
+    echo Download from: https://ffmpeg.org/download.html
+    pause
+    exit /b 1
+)
+
+cd ..
+
+:continue_setup
+REM Verify ffmpeg is working
+ffmpeg -version >nul 2>&1
+if errorlevel 1 (
+    echo ❌ ffmpeg installation failed or not in PATH
+    echo Please install ffmpeg manually and add it to your PATH
+    echo Download from: https://ffmpeg.org/download.html
+    pause
+    exit /b 1
+) else (
+    echo ✅ ffmpeg is ready
+)
+
 REM Change to rvc directory
 cd /d "%~dp0rvc"
 
