@@ -68,7 +68,7 @@ export default function HomePage() {
         // Create abort controller with a very long timeout (10 minutes)
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 minutes
-        const url = process.env.NODE_ENV === 'production' 
+        const url = process.env.NODE_ENV === 'development' 
         ? 'http://localhost:8000/' 
         : 'https://goonly.norrevik.ai/';
 
