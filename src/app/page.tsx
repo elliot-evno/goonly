@@ -68,7 +68,7 @@ export default function HomePage() {
         // Create abort controller with a very long timeout (10 minutes)
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 minutes
-        const url = process.env.NODE_ENV === 'development' 
+        const url = process.env.NODE_ENV === 'production' 
         ? 'http://localhost:8000/' 
         : 'https://goonly.norrevik.ai/';
 
@@ -93,11 +93,11 @@ export default function HomePage() {
         try {
           const errorData = await response.json();
           errorMessage = errorData.detail || errorData.error || errorMessage;
-        } catch (e) {
+        } catch {
           // If response is not JSON, try to get text
           try {
             errorMessage = await response.text();
-          } catch (e2) {
+          } catch {
             errorMessage = `HTTP ${response.status}: ${response.statusText}`;
           }
         }
