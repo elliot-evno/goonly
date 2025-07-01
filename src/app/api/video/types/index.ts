@@ -8,7 +8,12 @@ export interface ImageOverlay {
 export interface ConversationTurn {
   stewie: string;
   peter: string;
-  imageOverlays?: ImageOverlay[];
+  imageOverlays?: Array<{
+    filename: string;
+    startTime: number;
+    duration: number;
+    description: string;
+  }>;
 }
 
 export interface AudioResult {
@@ -19,7 +24,7 @@ export interface AudioResult {
 }
 
 export interface AudioFileData {
-  fileName: string;
+  buffer: Buffer;
   character: 'stewie' | 'peter';
   text: string;
   duration: number;

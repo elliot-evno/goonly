@@ -7,17 +7,22 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
   
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const formData = new FormData();
-      formData.append('text', text);
-      formData.append('character', character);
+      const params = new URLSearchParams();
+      params.append('text', text);
+      params.append('character', character);
       
-      // Use AbortController with longer timeout for TTS
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes
-      
-      const response = await fetch('http://localhost:8000/tts/', {
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
+      const url = process.env.NODE_ENV === 'development' 
+        ? 'http://localhost:8000/' 
+        : 'https://goonly.norrevik.ai/';
+
+      const response = await fetch(url + 'tts/', {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: params.toString(),
         signal: controller.signal
       });
       
@@ -33,15 +38,15 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
         throw new Error(`Empty audio buffer received for ${character}`);
       }
       
-      // Get actual duration using ffprobe
-      const tempPath = path.join(process.cwd(), 'temp', `temp_${Date.now()}_${Math.random()}.wav`);
+      // Get duration using a temp file only when necessary
+      const tempPath = path.join('/tmp', `temp_${Date.now()}_${Math.random()}.wav`);
       await fs.promises.writeFile(tempPath, audioBuffer);
       
       const duration = await new Promise<number>((resolve) => {
         ffmpeg.ffprobe(tempPath, (err: Error | null, metadata: { format: { duration?: number } }) => {
           if (err) {
             console.warn(`⚠️ Failed to get duration for ${character}, using fallback:`, err.message);
-            resolve(3.0); // Fallback duration
+            resolve(3.0);
           } else {
             const actualDuration = metadata.format.duration || 3.0;
             resolve(actualDuration);
@@ -49,7 +54,7 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
         });
       });
       
-      // Cleanup temp file
+      // Cleanup temp file immediately
       await fs.promises.unlink(tempPath).catch(() => {});
       
       return { 
@@ -69,9 +74,7 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
         throw new Error(`Failed to generate ${character} speech after ${retries + 1} attempts: ${error}`);
       }
       
-      // Wait before retrying with exponential backoff
       const waitTime = Math.pow(2, attempt + 1) * 1000;
-      console.log(`⏳ Waiting ${waitTime/1000}s before retry...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
   }
@@ -79,19 +82,39 @@ export async function generateAudio(text: string, character: 'stewie' | 'peter',
   throw new Error(`Failed to generate ${character} speech`);
 }
 
-export async function getWhisperWordTimings(audioPath: string, text: string): Promise<Array<{word: string, start: number, end: number}>> {
+export async function getWhisperWordTimings(audioBuffer: Buffer, text: string): Promise<Array<{word: string, start: number, end: number}>> {
   try {
+    // Create multipart form data manually for Node.js
+    const boundary = `----formdata-node-${Date.now()}`;
+    const chunks: Buffer[] = [];
     
-    const formData = new FormData();
-    const audioBuffer = await fs.promises.readFile(audioPath);
-    const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' });
+    // Add text field
+    chunks.push(Buffer.from(`--${boundary}\r\n`));
+    chunks.push(Buffer.from(`Content-Disposition: form-data; name="text"\r\n\r\n`));
+    chunks.push(Buffer.from(`${text}\r\n`));
     
-    formData.append('audio', audioBlob, 'audio.wav');
-    formData.append('text', text);
+    // Add audio file field
+    chunks.push(Buffer.from(`--${boundary}\r\n`));
+    chunks.push(Buffer.from(`Content-Disposition: form-data; name="audio"; filename="audio.wav"\r\n`));
+    chunks.push(Buffer.from(`Content-Type: audio/wav\r\n\r\n`));
+    chunks.push(audioBuffer);
+    chunks.push(Buffer.from(`\r\n`));
     
-    const response = await fetch('http://localhost:8000/whisper-timestamped/', {
+    // End boundary
+    chunks.push(Buffer.from(`--${boundary}--\r\n`));
+    
+    const body = Buffer.concat(chunks);
+    
+    const url = process.env.NODE_ENV === 'development' 
+      ? 'http://localhost:8000/' 
+      : 'https://goonly.norrevik.ai/';
+    
+    const response = await fetch(url + 'whisper-timestamped/', {
       method: 'POST',
-      body: formData,
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body: body,
     });
     
     if (!response.ok) {
@@ -112,18 +135,11 @@ export async function getWhisperWordTimings(audioPath: string, text: string): Pr
     
   } catch (error) {
     console.warn(`⚠️ Whisper-timestamped failed, falling back to improved estimation:`, error);
-    return estimateWordTiming(text, await getAudioDuration(audioPath));
+    return estimateWordTiming(text, 3.0); // Use fallback duration
   }
 }
 
-async function getAudioDuration(audioPath: string): Promise<number> {
-  return new Promise<number>((resolve) => {
-    ffmpeg.ffprobe(audioPath, (err: Error | null, metadata: { format: { duration?: number } }) => {
-      if (err) resolve(3.0); // Fallback duration
-      else resolve(metadata.format.duration || 3.0);
-    });
-  });
-}
+
 
 export function estimateWordTiming(text: string, duration: number): Array<{word: string, start: number, end: number}> {
   const words = text.split(' ').filter(word => word.trim() !== '');
@@ -132,12 +148,11 @@ export function estimateWordTiming(text: string, duration: number): Array<{word:
     return [];
   }
 
-  // Simple, even distribution (like CapCut actually does)
+  // Simple, even distribution
   const avgTimePerWord = duration / words.length;
   
   let currentTime = 0;
   return words.map((word) => {
-    // Simple calculation - no complex heuristics
     const wordDuration = avgTimePerWord;
     
     const result = {
@@ -151,42 +166,60 @@ export function estimateWordTiming(text: string, duration: number): Array<{word:
   });
 }
 
-export async function combineAudioFiles(audioFiles: AudioFileData[], tempDir: string): Promise<string> {
-  const combinedAudioPath = path.join(tempDir, 'combined_audio.wav');
+export async function combineAudioBuffers(audioData: AudioFileData[]): Promise<Buffer> {
   const GAP_DURATION = 0.2;
   
+  // Write audio buffers to temp files for FFmpeg processing
+  const tempFiles: string[] = [];
   const audioInputs = [];
   const filterParts = [];
   
-  for (let i = 0; i < audioFiles.length; i++) {
-    audioInputs.push(`[${i}:a]`);
-    
-    if (i < audioFiles.length - 1) {
-      filterParts.push(`anullsrc=duration=${GAP_DURATION}:sample_rate=44100:channel_layout=stereo[gap${i}]`);
-      audioInputs.push(`[gap${i}]`);
+  try {
+    for (let i = 0; i < audioData.length; i++) {
+      const tempFile = path.join('/tmp', `audio_${Date.now()}_${i}.wav`);
+      await fs.promises.writeFile(tempFile, audioData[i].buffer);
+      tempFiles.push(tempFile);
+      audioInputs.push(`[${i}:a]`);
+      
+      if (i < audioData.length - 1) {
+        filterParts.push(`anullsrc=duration=${GAP_DURATION}:sample_rate=44100:channel_layout=stereo[gap${i}]`);
+        audioInputs.push(`[gap${i}]`);
+      }
     }
-  }
-  
-  const audioFilterComplex = [
-    ...filterParts,
-    `${audioInputs.join('')}concat=n=${audioInputs.length}:v=0:a=1[out]`
-  ].join(';');
-
-  await new Promise((resolve, reject) => {
-    const command = ffmpeg();
     
-    audioFiles.forEach(audio => {
-      command.input(audio.fileName);
+    const audioFilterComplex = [
+      ...filterParts,
+      `${audioInputs.join('')}concat=n=${audioInputs.length}:v=0:a=1[out]`
+    ].join(';');
+
+    const outputPath = path.join('/tmp', `combined_${Date.now()}.wav`);
+    
+    await new Promise((resolve, reject) => {
+      const command = ffmpeg();
+      
+      tempFiles.forEach(file => {
+        command.input(file);
+      });
+      
+      command
+        .complexFilter(audioFilterComplex)
+        .outputOptions(['-map', '[out]', '-c:a', 'pcm_s16le'])
+        .output(outputPath)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
     });
-    
-    command
-      .complexFilter(audioFilterComplex)
-      .outputOptions(['-map', '[out]', '-c:a', 'pcm_s16le'])
-      .output(combinedAudioPath)
-      .on('end', resolve)
-      .on('error', reject)
-      .run();
-  });
 
-  return combinedAudioPath;
+    const combinedBuffer = await fs.promises.readFile(outputPath);
+    
+    // Cleanup temp files
+    await Promise.all(tempFiles.map(file => fs.promises.unlink(file).catch(() => {})));
+    
+    return combinedBuffer;
+    
+  } catch (error) {
+    // Cleanup on error
+    await Promise.all(tempFiles.map(file => fs.promises.unlink(file).catch(() => {})));
+    throw error;
+  }
 } 
