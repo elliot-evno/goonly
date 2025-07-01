@@ -63,21 +63,58 @@ export default function HomePage() {
       console.log('Starting video generation...');
       setVideoProgress('Generating audio for conversation...');
       
-      const response = await fetch('/api/video', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversation: conversationData })
-      });
+      let response;
+      try {
+        // Create abort controller with a very long timeout (10 minutes)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 minutes
+        const url = process.env.NODE_ENV === 'development' ? 'http://localhost:8000/' : 'https://goonly.norrevik.ai/';
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate video');
+        response = await fetch(url + 'api/video', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation: conversationData }),
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+      } catch (fetchError) {
+        console.error('Fetch error:', fetchError);
+        if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+          throw new Error('Request timed out after 10 minutes');
+        }
+        throw new Error(`Network error: ${fetchError instanceof Error ? fetchError.message : 'Unknown fetch error'}`);
       }
 
-      setVideoProgress('Processing video composition with Whisper timing...');
+      if (!response.ok) {
+        let errorMessage = 'Failed to generate video';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.detail || errorData.error || errorMessage;
+        } catch (e) {
+          // If response is not JSON, try to get text
+          try {
+            errorMessage = await response.text();
+          } catch (e2) {
+            errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+          }
+        }
+        throw new Error(errorMessage);
+      }
+
+      setVideoProgress('Downloading generated video...');
       
       // Get the video as a blob
-      const videoBlob = await response.blob();
+      let videoBlob;
+      try {
+        console.log('Starting to download video blob...');
+        videoBlob = await response.blob();
+        console.log('Video blob size:', videoBlob.size / (1024 * 1024), 'MB');
+      } catch (blobError) {
+        console.error('Error reading response as blob:', blobError);
+        throw new Error('Failed to read video response');
+      }
+      
       const url = URL.createObjectURL(videoBlob);
       
       setVideoUrl(url);

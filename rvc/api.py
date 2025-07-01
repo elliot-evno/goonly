@@ -10,7 +10,7 @@ logging.getLogger("fairseq.tasks.hubert_pretraining").setLevel(logging.ERROR)
 logging.getLogger("fairseq.models.hubert.hubert").setLevel(logging.ERROR)
 
 from fastapi import FastAPI, Form, HTTPException, File, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import sys
@@ -20,6 +20,10 @@ from scipy.io import wavfile
 import requests
 import uuid
 from dotenv import load_dotenv
+import json
+import base64
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel
 
 # Import whisper-timestamped for word-level timing
 try:
@@ -57,13 +61,15 @@ MODEL_CONFIG = {
 
 app = FastAPI(title="RVC TTS API", version="1.0.0")
 
-# Add CORS middleware
+# Add CORS middleware - include your production domain when deploying
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Length", "Content-Disposition", "*"],
+    max_age=3600,
 )
 
 def cleanup_temp_files(*file_paths):
@@ -259,13 +265,589 @@ async def health_check():
         "loaded_models": list(models.keys()),
         "whisper_available": WHISPER_AVAILABLE,
         "whisper_loaded": whisper_model is not None,
-        "whisper_endpoint": "enabled"
+        "whisper_endpoint": "enabled",
+        "video_processing": "enabled",
+        "endpoints": {
+            "tts": "/tts/",
+            "whisper_timestamped": "/whisper-timestamped/",
+            "process_video": "/process-video/",
+            "characters": "/characters"
+        }
     }
 
 @app.get("/characters")
 async def get_characters():
     """Get available character voices"""
     return {"characters": list(MODEL_CONFIG.keys())}
+
+# Import video processing
+from video import (
+    create_final_video_with_buffers,
+    AudioFileData,
+    CharacterTimeline,
+    ImageOverlay,
+    SubtitleConfig,
+    VideoConfig
+)
+
+class ConversationTurn(BaseModel):
+    stewie: str
+    peter: str
+    imageOverlays: Optional[List[Dict[str, Any]]] = None
+
+class VideoRequest(BaseModel):
+    conversation: List[ConversationTurn]
+    mediaFiles: Optional[List[Dict[str, Any]]] = None
+
+@app.post("/api/video")
+async def process_video_from_conversation(request: VideoRequest):
+    """Process video from conversation data - matches Next.js frontend expectations"""
+    request_id = str(uuid.uuid4())[:8]
+    print(f"[{request_id}] Processing video from conversation")
+    
+    conversation = request.conversation
+    media_files = request.mediaFiles or []
+    
+    if not conversation:
+        raise HTTPException(status_code=400, detail="No conversation provided")
+    
+    try:
+        # Default paths
+        video_path = os.path.join(os.path.dirname(__file__), "..", "public", "content", "subwaysurfers.mp4")
+        stewie_image_path = os.path.join(os.path.dirname(__file__), "..", "public", "content", "stewie.png")
+        peter_image_path = os.path.join(os.path.dirname(__file__), "..", "public", "content", "peter.png")
+        
+        # Verify files exist
+        if not os.path.exists(video_path):
+            raise HTTPException(status_code=400, detail="Background video not found")
+        if not os.path.exists(stewie_image_path):
+            raise HTTPException(status_code=400, detail="Stewie image not found")
+        if not os.path.exists(peter_image_path):
+            raise HTTPException(status_code=400, detail="Peter image not found")
+        
+        # Process media files
+        media_buffers = {}
+        if media_files:
+            for media_file in media_files:
+                if media_file.get("type") == "image":
+                    buffer_data = base64.b64decode(media_file["data"])
+                    media_buffers[media_file["filename"]] = buffer_data
+        
+        # Generate audio for each line
+        audio_results = []
+        audio_tasks = []
+        
+        for turn in conversation:
+            audio_tasks.append({"text": turn.stewie, "character": "stewie"})
+            audio_tasks.append({"text": turn.peter, "character": "peter"})
+        
+        # Process audio generation with RVC
+        for i, task in enumerate(audio_tasks):
+            print(f"[{request_id}] Generating audio {i+1}/{len(audio_tasks)}: {task['character']} - {task['text'][:50]}...")
+            
+            # Create temp files
+            tts_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            output_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            tts_path = tts_file.name
+            output_path = output_file.name
+            tts_file.close()
+            output_file.close()
+            
+            try:
+                # Load RVC model
+                model = load_model(task["character"])
+                config = MODEL_CONFIG[task["character"]]
+                
+                # Generate TTS audio
+                tts_success = await generate_tts_audio(task["text"], task["character"], tts_path)
+                if not tts_success:
+                    raise HTTPException(status_code=500, detail="TTS generation failed")
+                
+                # Apply RVC voice conversion
+                _, wav_opt = model.vc_single(
+                    0, tts_path, 0, None, "harvest", config["index_path"], None, 0.66, 3, 0, 1, 0.33
+                )
+                
+                # Write the converted audio
+                wavfile.write(output_path, wav_opt[0], wav_opt[1])
+                
+                # Read the converted audio
+                with open(output_path, "rb") as f:
+                    audio_buffer = f.read()
+                
+                # Calculate actual duration from wav data
+                sample_rate = wav_opt[0]
+                num_samples = len(wav_opt[1])
+                duration = num_samples / sample_rate
+                
+                audio_results.append({
+                    "buffer": audio_buffer,
+                    "character": task["character"],
+                    "text": task["text"],
+                    "duration": duration
+                })
+                
+            finally:
+                # Cleanup temp files
+                cleanup_temp_files(tts_path, output_path)
+        
+        # Build timeline
+        audio_data_list = []
+        character_timeline_list = []
+        word_timeline = []
+        GAP_DURATION = 0.2
+        current_time = 0
+        
+        for audio in audio_results:
+            audio_data_list.append(
+                AudioFileData(
+                    buffer=audio["buffer"],
+                    duration=audio["duration"],
+                    character=audio["character"]
+                )
+            )
+            
+            character_timeline_list.append(
+                CharacterTimeline(
+                    character=audio["character"],
+                    start_time=current_time,
+                    end_time=current_time + audio["duration"]
+                )
+            )
+            
+            # Get word timings using whisper
+            if WHISPER_AVAILABLE:
+                try:
+                    word_timings = await get_word_timings_from_whisper(audio["buffer"], audio["text"])
+                    for word_timing in word_timings:
+                        word_timeline.append({
+                            "text": word_timing["word"],
+                            "startTime": current_time + word_timing["start"],
+                            "endTime": current_time + word_timing["end"],
+                            "character": audio["character"]
+                        })
+                except Exception as e:
+                    print(f"[{request_id}] Warning: Failed to get word timings: {str(e)}")
+                    # Fallback: create simple word timeline
+                    words = audio["text"].split()
+                    word_duration = audio["duration"] / len(words) if words else 0
+                    for i, word in enumerate(words):
+                        word_timeline.append({
+                            "text": word,
+                            "startTime": current_time + (i * word_duration),
+                            "endTime": current_time + ((i + 1) * word_duration),
+                            "character": audio["character"]
+                        })
+            else:
+                # No whisper available - create simple word timeline
+                words = audio["text"].split()
+                word_duration = audio["duration"] / len(words) if words else 0
+                for i, word in enumerate(words):
+                    word_timeline.append({
+                        "text": word,
+                        "startTime": current_time + (i * word_duration),
+                        "endTime": current_time + ((i + 1) * word_duration),
+                        "character": audio["character"]
+                    })
+            
+            current_time += audio["duration"] + GAP_DURATION
+        
+        total_duration = current_time - GAP_DURATION + 1
+        
+        # Create subtitle content
+        subtitle_content = create_subtitle_content(word_timeline)
+        
+        # Process image overlays
+        image_overlays_list = []
+        conversation_index = 0
+        for turn in conversation:
+            if turn.imageOverlays:
+                turn_start_time = current_time if conversation_index * 2 < len(audio_data_list) else 0
+                
+                for overlay in turn.imageOverlays:
+                    if overlay["filename"] in media_buffers:
+                        global_start_time = turn_start_time + overlay["startTime"]
+                        global_end_time = global_start_time + overlay["duration"]
+                        
+                        image_overlays_list.append(
+                            ImageOverlay(
+                                buffer=media_buffers[overlay["filename"]],
+                                start_time=global_start_time,
+                                end_time=global_end_time,
+                                description=overlay.get("description", "")
+                            )
+                        )
+            conversation_index += 1
+        
+        # Create video
+        config = VideoConfig()
+        video_buffer = await create_final_video_with_buffers(
+            video_path=video_path,
+            stewie_image_path=stewie_image_path,
+            peter_image_path=peter_image_path,
+            audio_data=audio_data_list,
+            subtitle_content=subtitle_content,
+            character_timeline=character_timeline_list,
+            duration=total_duration,
+            image_overlays=image_overlays_list if image_overlays_list else None,
+            config=config
+        )
+        
+        print(f"[{request_id}] Video generation completed")
+        
+        # For large files, we should save to a temp file and stream it
+        temp_video_path = f"/tmp/video_output_{request_id}.mp4"
+        with open(temp_video_path, "wb") as f:
+            f.write(video_buffer)
+        
+        # Get file size for logging
+        file_size = os.path.getsize(temp_video_path)
+        print(f"[{request_id}] Video file size: {file_size / (1024*1024):.1f} MB")
+        
+        # For large files, use streaming response with chunks
+        def iterfile():
+            with open(temp_video_path, 'rb') as f:
+                while chunk := f.read(1024 * 1024):  # 1MB chunks
+                    yield chunk
+            # Cleanup after streaming
+            try:
+                os.unlink(temp_video_path)
+            except:
+                pass
+        
+        return StreamingResponse(
+            iterfile(),
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f'attachment; filename="peter-stewie-conversation_{request_id}.mp4"',
+                "Content-Length": str(file_size),
+            }
+        )
+        
+    except Exception as e:
+        print(f"[{request_id}] Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def get_word_timings_from_whisper(audio_buffer: bytes, text: str):
+    """Helper function to get word timings from whisper"""
+    if not WHISPER_AVAILABLE:
+        return []
+    
+    # Save audio buffer to temp file
+    temp_audio_path = f"/tmp/whisper_audio_{uuid.uuid4()}.wav"
+    with open(temp_audio_path, "wb") as f:
+        f.write(audio_buffer)
+    
+    try:
+        # Load whisper model
+        model = load_whisper_model()
+        
+        # Load audio and transcribe
+        audio_data = whisper.load_audio(temp_audio_path)
+        result = whisper.transcribe(model, audio_data, language="en", verbose=False)
+        
+        # Extract word timings
+        word_segments = []
+        if "segments" in result:
+            for segment in result["segments"]:
+                if "words" in segment:
+                    for word_data in segment["words"]:
+                        if isinstance(word_data, dict) and "text" in word_data:
+                            word_segments.append({
+                                "word": word_data.get("text", "").strip(),
+                                "start": word_data.get("start", 0),
+                                "end": word_data.get("end", 0)
+                            })
+        
+        return word_segments
+        
+    finally:
+        if os.path.exists(temp_audio_path):
+            os.unlink(temp_audio_path)
+
+def create_subtitle_content(word_timeline):
+    """Create ASS subtitle content from word timeline"""
+    # ASS header
+    content = """[Script Info]
+Title: Generated Subtitles
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+PlayResX: 1080
+PlayResY: 1920
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial Black,140,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,8,3,2,10,10,300,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    
+    # Add word events
+    for word in word_timeline:
+        start_time = format_ass_time(word["startTime"])
+        end_time = format_ass_time(word["endTime"])
+        text = word["text"]
+        
+        content += f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{text}\n"
+    
+    return content
+
+def format_ass_time(seconds):
+    """Format seconds to ASS time format (h:mm:ss.cc)"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    centisecs = int((seconds % 1) * 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centisecs:02d}"
+
+@app.post("/process-video/")
+async def process_video_endpoint(
+    video_file: UploadFile = File(...),
+    subtitle_content: str = Form(...),
+    character_timeline: str = Form(...),  # JSON string
+    duration: float = Form(...),
+    audio_data: str = Form(...),  # JSON string with base64 encoded audio
+    image_overlays: Optional[str] = Form(None),  # JSON string with base64 encoded images
+    stewie_image: Optional[UploadFile] = File(None),
+    peter_image: Optional[UploadFile] = File(None),
+    fade_in_duration: float = Form(0.05),
+    fade_out_duration: float = Form(0.05)
+):
+    """Process video with character overlays, subtitles, and optional image overlays"""
+    request_id = str(uuid.uuid4())[:8]
+    print(f"[{request_id}] Processing video request")
+    
+    # Create temp files for video and images
+    video_path = None
+    stewie_path = None
+    peter_path = None
+    
+    try:
+        # Save uploaded video
+        video_file_content = await video_file.read()
+        video_path = f"/tmp/video_{request_id}.mp4"
+        with open(video_path, 'wb') as f:
+            f.write(video_file_content)
+        
+        # Use default character images if not provided
+        if stewie_image:
+            stewie_content = await stewie_image.read()
+            stewie_path = f"/tmp/stewie_{request_id}.png"
+            with open(stewie_path, 'wb') as f:
+                f.write(stewie_content)
+        else:
+            # Use default from public content
+            stewie_path = os.path.join(os.path.dirname(__file__), "..", "public", "content", "stewie.png")
+            if not os.path.exists(stewie_path):
+                raise HTTPException(status_code=400, detail="Default Stewie image not found")
+        
+        if peter_image:
+            peter_content = await peter_image.read()
+            peter_path = f"/tmp/peter_{request_id}.png"
+            with open(peter_path, 'wb') as f:
+                f.write(peter_content)
+        else:
+            # Use default from public content
+            peter_path = os.path.join(os.path.dirname(__file__), "..", "public", "content", "peter.png")
+            if not os.path.exists(peter_path):
+                raise HTTPException(status_code=400, detail="Default Peter image not found")
+        
+        # Parse JSON data
+        try:
+            timeline_data = json.loads(character_timeline)
+            audio_json = json.loads(audio_data)
+            overlays_json = json.loads(image_overlays) if image_overlays else None
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON data: {str(e)}")
+        
+        # Convert to dataclasses
+        character_timeline_list = [
+            CharacterTimeline(
+                character=item['character'],
+                start_time=item['startTime'],
+                end_time=item['endTime']
+            )
+            for item in timeline_data
+        ]
+        
+        audio_data_list = [
+            AudioFileData(
+                buffer=base64.b64decode(item['buffer']),
+                duration=item['duration'],
+                character=item['character']
+            )
+            for item in audio_json
+        ]
+        
+        image_overlays_list = None
+        if overlays_json:
+            image_overlays_list = [
+                ImageOverlay(
+                    buffer=base64.b64decode(item['buffer']),
+                    start_time=item['startTime'],
+                    end_time=item['endTime'],
+                    description=item.get('description', '')
+                )
+                for item in overlays_json
+            ]
+        
+        # Create video config
+        config = VideoConfig(
+            subtitle_config=SubtitleConfig(
+                fade_in_duration=fade_in_duration,
+                fade_out_duration=fade_out_duration
+            )
+        )
+        
+        # Process video
+        print(f"[{request_id}] Starting video processing")
+        video_buffer = await create_final_video_with_buffers(
+            video_path=video_path,
+            stewie_image_path=stewie_path,
+            peter_image_path=peter_path,
+            audio_data=audio_data_list,
+            subtitle_content=subtitle_content,
+            character_timeline=character_timeline_list,
+            duration=duration,
+            image_overlays=image_overlays_list,
+            config=config
+        )
+        
+        print(f"[{request_id}] Video processing completed")
+        
+        # Cleanup temp files
+        cleanup_temp_files(video_path)
+        if stewie_image:
+            cleanup_temp_files(stewie_path)
+        if peter_image:
+            cleanup_temp_files(peter_path)
+        
+        # Return video as response
+        return Response(
+            content=video_buffer,
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f"attachment; filename=processed_video_{request_id}.mp4"
+            }
+        )
+        
+    except Exception as e:
+        print(f"[{request_id}] Error processing video: {str(e)}")
+        # Cleanup on error
+        cleanup_temp_files(video_path)
+        if stewie_image and stewie_path:
+            cleanup_temp_files(stewie_path)
+        if peter_image and peter_path:
+            cleanup_temp_files(peter_path)
+        raise HTTPException(status_code=500, detail=f"Video processing failed: {str(e)}")
+
+@app.post("/process-video-simple/")
+async def process_video_simple_endpoint(
+    video_path: str = Form(...),
+    audio_paths: str = Form(...),  # JSON array of file paths
+    subtitle_content: str = Form(...),
+    character_timeline: str = Form(...),  # JSON string
+    duration: float = Form(...),
+    stewie_image_path: Optional[str] = Form(None),
+    peter_image_path: Optional[str] = Form(None),
+    fade_in_duration: float = Form(0.05),
+    fade_out_duration: float = Form(0.05)
+):
+    """Simpler video processing endpoint that accepts file paths instead of buffers"""
+    request_id = str(uuid.uuid4())[:8]
+    print(f"[{request_id}] Processing simple video request")
+    
+    try:
+        # Parse JSON data
+        try:
+            audio_paths_list = json.loads(audio_paths)
+            timeline_data = json.loads(character_timeline)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON data: {str(e)}")
+        
+        # Use default character images if not provided
+        if not stewie_image_path:
+            stewie_image_path = os.path.join(os.path.dirname(__file__), "..", "public", "content", "stewie.png")
+        if not peter_image_path:
+            peter_image_path = os.path.join(os.path.dirname(__file__), "..", "public", "content", "peter.png")
+        
+        # Validate all paths exist
+        if not os.path.exists(video_path):
+            raise HTTPException(status_code=400, detail=f"Video file not found: {video_path}")
+        if not os.path.exists(stewie_image_path):
+            raise HTTPException(status_code=400, detail=f"Stewie image not found: {stewie_image_path}")
+        if not os.path.exists(peter_image_path):
+            raise HTTPException(status_code=400, detail=f"Peter image not found: {peter_image_path}")
+        
+        # Load audio files and create AudioFileData objects
+        audio_data_list = []
+        for i, audio_path in enumerate(audio_paths_list):
+            if not os.path.exists(audio_path):
+                raise HTTPException(status_code=400, detail=f"Audio file not found: {audio_path}")
+            
+            with open(audio_path, 'rb') as f:
+                audio_buffer = f.read()
+            
+            # Determine character from timeline (simple assumption: alternating or based on order)
+            character = timeline_data[i % len(timeline_data)]['character'] if i < len(timeline_data) else 'peter'
+            
+            audio_data_list.append(
+                AudioFileData(
+                    buffer=audio_buffer,
+                    duration=timeline_data[i]['endTime'] - timeline_data[i]['startTime'] if i < len(timeline_data) else 1.0,
+                    character=character
+                )
+            )
+        
+        # Convert timeline to dataclasses
+        character_timeline_list = [
+            CharacterTimeline(
+                character=item['character'],
+                start_time=item['startTime'],
+                end_time=item['endTime']
+            )
+            for item in timeline_data
+        ]
+        
+        # Create video config
+        config = VideoConfig(
+            subtitle_config=SubtitleConfig(
+                fade_in_duration=fade_in_duration,
+                fade_out_duration=fade_out_duration
+            )
+        )
+        
+        # Process video
+        print(f"[{request_id}] Starting simple video processing")
+        video_buffer = await create_final_video_with_buffers(
+            video_path=video_path,
+            stewie_image_path=stewie_image_path,
+            peter_image_path=peter_image_path,
+            audio_data=audio_data_list,
+            subtitle_content=subtitle_content,
+            character_timeline=character_timeline_list,
+            duration=duration,
+            image_overlays=None,
+            config=config
+        )
+        
+        print(f"[{request_id}] Simple video processing completed")
+        
+        # Return video as response
+        return Response(
+            content=video_buffer,
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f"attachment; filename=processed_video_{request_id}.mp4"
+            }
+        )
+        
+    except Exception as e:
+        print(f"[{request_id}] Error in simple video processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Video processing failed: {str(e)}")
 
 @app.post("/whisper-timestamped/")
 async def whisper_timestamped_endpoint(
