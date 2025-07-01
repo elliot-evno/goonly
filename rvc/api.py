@@ -497,7 +497,7 @@ async def process_video_from_conversation(request: VideoRequest):
         print(f"[{request_id}] Video generation completed")
         
         # For large files, we should save to a temp file and stream it
-        temp_video_path = f"/tmp/video_output_{request_id}.mp4"
+        temp_video_path = os.path.join(tempfile.gettempdir(), f"video_output_{request_id}.mp4")
         with open(temp_video_path, "wb") as f:
             f.write(video_buffer)
         
@@ -535,7 +535,7 @@ async def get_word_timings_from_whisper(audio_buffer: bytes, text: str):
         return []
     
     # Save audio buffer to temp file
-    temp_audio_path = f"/tmp/whisper_audio_{uuid.uuid4()}.wav"
+    temp_audio_path = os.path.join(tempfile.gettempdir(), f"whisper_audio_{uuid.uuid4()}.wav")
     with open(temp_audio_path, "wb") as f:
         f.write(audio_buffer)
     

@@ -58,16 +58,16 @@ async def combine_audio_buffers(audio_data: List[AudioFileData]) -> bytes:
     temp_files = []
     try:
         for i, data in enumerate(audio_data):
-            temp_path = f"/tmp/audio_part_{uuid.uuid4()}.wav"
+            temp_path = os.path.join(tempfile.gettempdir(), f"audio_part_{uuid.uuid4()}.wav")
             with open(temp_path, 'wb') as f:
                 f.write(data.buffer)
             temp_files.append(temp_path)
         
         # Use ffmpeg to concatenate audio files
-        output_path = f"/tmp/combined_audio_{uuid.uuid4()}.wav"
+        output_path = os.path.join(tempfile.gettempdir(), f"combined_audio_{uuid.uuid4()}.wav")
         
         # Create concat file list
-        concat_list_path = f"/tmp/concat_list_{uuid.uuid4()}.txt"
+        concat_list_path = os.path.join(tempfile.gettempdir(), f"concat_list_{uuid.uuid4()}.txt")
         with open(concat_list_path, 'w') as f:
             for temp_file in temp_files:
                 f.write(f"file '{temp_file}'\n")
@@ -131,13 +131,13 @@ async def create_final_video_with_buffers(
     fade_out_duration = config.subtitle_config.fade_out_duration
     
     # Write subtitle content to temp file
-    subtitle_path = f"/tmp/subtitles_{int(time.time())}_{uuid.uuid4()}.ass"
+    subtitle_path = os.path.join(tempfile.gettempdir(), f"subtitles_{int(time.time())}_{uuid.uuid4()}.ass")
     with open(subtitle_path, 'w') as f:
         f.write(subtitle_content)
     
     # Combine audio buffers
     combined_audio_buffer = await combine_audio_buffers(audio_data)
-    combined_audio_path = f"/tmp/combined_audio_{int(time.time())}_{uuid.uuid4()}.wav"
+    combined_audio_path = os.path.join(tempfile.gettempdir(), f"combined_audio_{int(time.time())}_{uuid.uuid4()}.wav")
     with open(combined_audio_path, 'wb') as f:
         f.write(combined_audio_buffer)
     
@@ -146,7 +146,7 @@ async def create_final_video_with_buffers(
     try:
         if image_overlays:
             for i, overlay in enumerate(image_overlays):
-                temp_image_path = f"/tmp/overlay_{int(time.time())}_{i}_{uuid.uuid4()}.png"
+                temp_image_path = os.path.join(tempfile.gettempdir(), f"overlay_{int(time.time())}_{i}_{uuid.uuid4()}.png")
                 with open(temp_image_path, 'wb') as f:
                     f.write(overlay.buffer)
                 overlay_temp_files.append(temp_image_path)
@@ -226,7 +226,7 @@ async def create_final_video_with_buffers(
         
         filter_complex = ';'.join(filter_parts)
         
-        output_path = f"/tmp/output_{int(time.time())}_{uuid.uuid4()}.mp4"
+        output_path = os.path.join(tempfile.gettempdir(), f"output_{int(time.time())}_{uuid.uuid4()}.mp4")
         
         command = [
             'ffmpeg',
