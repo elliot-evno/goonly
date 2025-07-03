@@ -1,6 +1,7 @@
 import tempfile
 import uuid
 import os
+import asyncio
 from typing import List, Dict, Any
 from scipy.io import wavfile
 from fastapi import HTTPException
@@ -95,18 +96,19 @@ async def generate_audio_for_text(text: str, character: str, request_id: str) ->
 async def process_conversation_audio(conversation, request_id: str) -> tuple[List[AudioFileData], List[CharacterTimeline], List[Dict], float]:
     """Process all audio for a conversation and return timeline data"""
     # Generate audio for each line
-    audio_results = []
     audio_tasks = []
     
     for turn in conversation:
         audio_tasks.append({"text": turn.stewie, "character": "stewie"})
         audio_tasks.append({"text": turn.peter, "character": "peter"})
     
-    # Process audio generation with RVC
-    for i, task in enumerate(audio_tasks):
-        print(f"[{request_id}] Generating audio {i+1}/{len(audio_tasks)}: {task['character']} - {task['text'][:50]}...")
-        audio_result = await generate_audio_for_text(task["text"], task["character"], request_id)
-        audio_results.append(audio_result)
+    # Process audio generation with RVC in parallel
+    print(f"[{request_id}] Generating {len(audio_tasks)} audio files in parallel...")
+    audio_results = await asyncio.gather(
+        *[generate_audio_for_text(task["text"], task["character"], request_id) 
+          for task in audio_tasks]
+    )
+    print(f"[{request_id}] All audio generation completed")
     
     # Build timeline
     audio_data_list = []
