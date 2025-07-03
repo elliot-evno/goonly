@@ -2,7 +2,31 @@ import os
 import tempfile
 import uuid
 from fastapi import HTTPException, File, Form, UploadFile
-from models import *
+from rvc.models.models import *
+
+
+try: 
+    import whisper_timestamped as whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
+    pass
+
+def load_whisper_model():
+    """Load the Whisper model for word-level timing if not already loaded"""
+    global whisper_model
+    
+    
+    if not WHISPER_AVAILABLE:
+        raise RuntimeError("whisper-timestamped is not installed. Install with: pip install whisper-timestamped")
+    
+    if whisper_model is None:
+        try:
+            # Use small model for balance of speed and accuracy
+            whisper_model = whisper.load_model("small", device="cpu")
+        except Exception as e:
+            raise e
+    return whisper_model
 
 async def whisper_timestamped_endpoint(
     audio: UploadFile = File(...),

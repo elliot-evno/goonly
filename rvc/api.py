@@ -32,11 +32,11 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 
 
-from models import *
+from rvc.models.models import *
 from captions import *
 from config import *
-from tts import *
-from whisper import *
+from rvc.models.tts import *
+from rvc.models.whisper import *
 
 
 
@@ -146,7 +146,7 @@ async def get_characters():
     return {"characters": list(MODEL_CONFIG.keys())}
 
 # Import video processing
-from video import (
+from rvc.video import (
     create_final_video_with_buffers,
     AudioFileData,
     CharacterTimeline,

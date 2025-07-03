@@ -5,13 +5,6 @@ from rvc.infer.modules.vc.modules import VC
 from rvc.configs.config import Config
 from dotenv import load_dotenv
 
-# Import whisper-timestamped for word-level timing
-try:
-    import whisper_timestamped as whisper
-    WHISPER_AVAILABLE = True
-except ImportError:
-    WHISPER_AVAILABLE = False
-    pass
 
 def load_model(character: str):
     """Load the RVC model for the specified character if not already loaded"""
@@ -51,18 +44,3 @@ def load_model(character: str):
             
     return models[character]
 
-def load_whisper_model():
-    """Load the Whisper model for word-level timing if not already loaded"""
-    global whisper_model
-    
-    
-    if not WHISPER_AVAILABLE:
-        raise RuntimeError("whisper-timestamped is not installed. Install with: pip install whisper-timestamped")
-    
-    if whisper_model is None:
-        try:
-            # Use small model for balance of speed and accuracy
-            whisper_model = whisper.load_model("small", device="cpu")
-        except Exception as e:
-            raise e
-    return whisper_model

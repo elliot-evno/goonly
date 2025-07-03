@@ -1,8 +1,15 @@
 import os
 import tempfile
 import uuid
-import whisper
-from models import *
+from rvc.models.models import *
+from rvc.models.whisper import *
+
+try: 
+    import whisper_timestamped as whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
+    pass
 
 async def get_word_timings_from_whisper(audio_buffer: bytes, text: str):
     """Helper function to get word timings from whisper"""
