@@ -9,8 +9,16 @@ logging.getLogger("fairseq").setLevel(logging.ERROR)
 logging.getLogger("fairseq.tasks.hubert_pretraining").setLevel(logging.ERROR)
 logging.getLogger("fairseq.models.hubert.hubert").setLevel(logging.ERROR)
 
+# Import whisper-timestamped for word-level timing
+try:
+    import whisper_timestamped as whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
+    pass
+
 from fastapi import FastAPI, Form, HTTPException, File, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import sys
@@ -22,10 +30,13 @@ import uuid
 import base64
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
+
+
 from models import *
-
-
+from captions import *
 from config import *
+from tts import *
+from whisper import *
 
 
 
@@ -42,71 +53,6 @@ app.add_middleware(
     expose_headers=["Content-Length", "Content-Disposition", "*"],
     max_age=3600,
 )
-
-def cleanup_temp_files(*file_paths):
-    """Clean up temporary files safely"""
-    for file_path in file_paths:
-        try:
-            if file_path and os.path.exists(file_path):
-                os.unlink(file_path)
-        except Exception as e:
-            pass
-
-
-
-async def generate_tts_audio(text: str, character: str, output_path: str) -> bool:
-    """Generate TTS audio with fallback chain"""
-    request_id = str(uuid.uuid4())[:8]
-    
-    # First attempt: ElevenLabs via direct API
-    if ELEVENLABS_VOICE_ID and ELEVENLABS_API_KEY:
-        try:
-            voice_id = ELEVENLABS_VOICE_ID
-            api_key = ELEVENLABS_API_KEY
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-            
-            headers = {
-                "Accept": "audio/mpeg",
-                "Content-Type": "application/json",
-                "xi-api-key": api_key
-            }
-            
-            data = {
-                "text": text,
-                "model_id": "eleven_monolingual_v1",
-                "voice_settings": {
-                    "stability": 0.5,
-                    "similarity_boost": 0.5
-                }
-            }
-            
-            response = requests.post(url, json=data, headers=headers, timeout=30)
-            try:
-                response.raise_for_status()
-            except Exception:
-                pass
-            
-            # Save to temporary MP3, then convert
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as mp3_file:
-                mp3_path = mp3_file.name
-                mp3_file.write(response.content)
-            
-            try:
-                subprocess.run(
-                    ["ffmpeg", "-y", "-i", mp3_path, output_path], 
-                    check=True, 
-                    capture_output=True
-                )
-                return True
-            finally:
-                cleanup_temp_files(mp3_path)
-        except Exception:
-            # If ElevenLabs fails, we could add fallback logic here
-            pass
-    
-    # If we reach here, TTS generation failed
-    return False
-
 
 @app.post("/tts/")
 async def tts_endpoint(text: str = Form(...), character: str = Form("peter")):
@@ -205,7 +151,6 @@ from video import (
     AudioFileData,
     CharacterTimeline,
     ImageOverlay,
-    SubtitleConfig,
     VideoConfig
 )
 
@@ -447,161 +392,9 @@ async def process_video_from_conversation(request: VideoRequest):
         print(f"[{request_id}] Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def get_word_timings_from_whisper(audio_buffer: bytes, text: str):
-    """Helper function to get word timings from whisper"""
-    if not WHISPER_AVAILABLE:
-        return []
-    
-    # Save audio buffer to temp file
-    temp_audio_path = os.path.join(tempfile.gettempdir(), f"whisper_audio_{uuid.uuid4()}.wav")
-    with open(temp_audio_path, "wb") as f:
-        f.write(audio_buffer)
-    
-    try:
-        # Load whisper model
-        model = load_whisper_model()
-        
-        # Load audio and transcribe
-        audio_data = whisper.load_audio(temp_audio_path)
-        result = whisper.transcribe(model, audio_data, language="en", verbose=False)
-        
-        # Extract word timings
-        word_segments = []
-        if "segments" in result:
-            for segment in result["segments"]:
-                if "words" in segment:
-                    for word_data in segment["words"]:
-                        if isinstance(word_data, dict) and "text" in word_data:
-                            word_segments.append({
-                                "word": word_data.get("text", "").strip(),
-                                "start": word_data.get("start", 0),
-                                "end": word_data.get("end", 0)
-                            })
-        
-        return word_segments
-        
-    finally:
-        if os.path.exists(temp_audio_path):
-            os.unlink(temp_audio_path)
-
-def create_subtitle_content(word_timeline):
-    """Create ASS subtitle content from word timeline"""
-    # ASS header
-    content = """[Script Info]
-Title: Generated Subtitles
-ScriptType: v4.00+
-WrapStyle: 0
-ScaledBorderAndShadow: yes
-YCbCr Matrix: None
-PlayResX: 1080
-PlayResY: 1920
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,140,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,8,3,2,10,10,300,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    
-    # Add word events
-    for word in word_timeline:
-        start_time = format_ass_time(word["startTime"])
-        end_time = format_ass_time(word["endTime"])
-        text = word["text"]
-        
-        content += f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{text}\n"
-    
-    return content
-
-def format_ass_time(seconds):
-    """Format seconds to ASS time format (h:mm:ss.cc)"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    centisecs = int((seconds % 1) * 100)
-    return f"{hours}:{minutes:02d}:{secs:02d}.{centisecs:02d}"
-
 @app.post("/whisper-timestamped/")
 async def whisper_timestamped_endpoint(
     audio: UploadFile = File(...),
     text: str = Form(...)
 ):
-    """Generate CapCut-style word-level timestamps using whisper-timestamped"""
-    request_id = str(uuid.uuid4())[:8]
-    
-    
-    if not WHISPER_AVAILABLE:
-        raise HTTPException(
-            status_code=500, 
-            detail="whisper-timestamped is not installed. Install with: pip install whisper-timestamped"
-        )
-    
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="Text cannot be empty")
-    
-    temp_audio_path = None
-    
-    try:
-        # Save uploaded audio to temp file
-        temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        temp_audio_path = temp_file.name
-        
-        audio_content = await audio.read()
-        
-        temp_file.write(audio_content)
-        temp_file.close()
-        
-        # Load Whisper model
-        model = load_whisper_model()
-        
-        # Load audio and transcribe with word-level timestamps
-        audio_data = whisper.load_audio(temp_audio_path)
-        
-        # Use whisper-timestamped for accurate word timing
-        try:
-            # Use whisper-timestamped's transcribe function (not transcribe_timestamped)
-            # The API is: whisper.transcribe(model, audio, **kwargs)
-            result = whisper.transcribe(
-                whisper_model, 
-                audio_data,
-                language="en",  # You can make this configurable
-                verbose=False
-            )
-        except Exception as e:
-            raise
-        
-        
-        # Extract word segments from whisper-timestamped format
-        word_segments = []
-        
-        if "segments" in result:
-            for i, segment in enumerate(result["segments"]):
-                
-                # whisper-timestamped puts words directly in segments
-                if "words" in segment and segment["words"]:
-                    for word_data in segment["words"]:
-                        if isinstance(word_data, dict) and "text" in word_data:
-                            word_segments.append({
-                                "word": word_data.get("text", "").strip(),
-                                "start": word_data.get("start", 0),
-                                "end": word_data.get("end", 0)
-                            })
-
-        
-        # Clean up temp file
-        try:
-            os.unlink(temp_audio_path)
-        except Exception:
-            pass
-        return {"word_segments": word_segments}
-        
-    except Exception as e:
-        
-        # Clean up temp file on error only if it still exists
-        if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
-            try:
-                os.unlink(temp_audio_path)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"Whisper timestamped processing failed: {str(e)}")
+    return await whisper_timestamped_endpoint(audio, text)

@@ -221,7 +221,7 @@ async def create_final_video_with_buffers(
         filter_parts.append(
             f"[{final_input}]subtitles='{subtitle_path}':"
             f"force_style='FontName=Arial Black,Fontsize=140,PrimaryColour=&H00FFFFFF,"
-            f"BorderStyle=1,Outline=8,Shadow=3,Alignment=2,MarginV=300'[final]"
+            f"BorderStyle=1,Outline=8,Shadow=3,Alignment=8,MarginV=200'[final]"
         )
         
         filter_complex = ';'.join(filter_parts)
