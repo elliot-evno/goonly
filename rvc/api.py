@@ -9,23 +9,14 @@ logging.getLogger("fairseq").setLevel(logging.ERROR)
 logging.getLogger("fairseq.tasks.hubert_pretraining").setLevel(logging.ERROR)
 logging.getLogger("fairseq.models.hubert.hubert").setLevel(logging.ERROR)
 
-# Import whisper-timestamped for word-level timing
-try:
-    import whisper_timestamped as whisper
-    WHISPER_AVAILABLE = True
-except ImportError:
-    WHISPER_AVAILABLE = False
-    pass
+
 
 from fastapi import FastAPI, Form, HTTPException, File, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
-import sys
 import tempfile
-import subprocess
 from scipy.io import wavfile
-import requests
 import uuid
 import base64
 from typing import Optional, List, Dict, Any
@@ -33,11 +24,17 @@ from pydantic import BaseModel
 
 
 from rvc.models.models import *
-from captions import *
+from rvc.captions import *
 from config import *
 from rvc.models.tts import *
 from rvc.models.whisper import *
-
+from rvc.video import (
+    create_final_video_with_buffers,
+    AudioFileData,
+    CharacterTimeline,
+    ImageOverlay,
+    VideoConfig
+)
 
 
 
@@ -145,14 +142,7 @@ async def get_characters():
     """Get available character voices"""
     return {"characters": list(MODEL_CONFIG.keys())}
 
-# Import video processing
-from rvc.video import (
-    create_final_video_with_buffers,
-    AudioFileData,
-    CharacterTimeline,
-    ImageOverlay,
-    VideoConfig
-)
+
 
 class ConversationTurn(BaseModel):
     stewie: str
