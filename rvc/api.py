@@ -19,45 +19,16 @@ import subprocess
 from scipy.io import wavfile
 import requests
 import uuid
-from dotenv import load_dotenv
-import json
 import base64
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
-
-# Import whisper-timestamped for word-level timing
-try:
-    import whisper_timestamped as whisper
-    WHISPER_AVAILABLE = True
-except ImportError:
-    WHISPER_AVAILABLE = False
-    pass
-
-# Import your RVC inference logic:
-from infer.modules.vc.modules import VC
-from configs.config import Config
-
-load_dotenv()
-
-ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+from models import *
 
 
-# Global variables for models (will be loaded on first request)
-models = {}
-whisper_model = None
+from config import *
 
-# Model configurations
-MODEL_CONFIG = {
-    "peter": {
-        "model_path": "peter.pth",
-        "index_path": "assets/weights/peter.index"
-    },
-    "stewie": {
-        "model_path": "stewie.pth", 
-        "index_path": "assets/weights/stewie.index"
-    }
-}
+
+
 
 app = FastAPI(title="RVC TTS API", version="1.0.0")
 
@@ -81,60 +52,7 @@ def cleanup_temp_files(*file_paths):
         except Exception as e:
             pass
 
-def load_model(character: str):
-    """Load the RVC model for the specified character if not already loaded"""
-    global models
-    
-    if character not in MODEL_CONFIG:
-        raise ValueError(f"Unknown character: {character}. Available: {list(MODEL_CONFIG.keys())}")
-    
-    if character not in models:
-        
-        # Override sys.argv to prevent argument parsing conflicts
-        original_argv = sys.argv.copy()
-        original_cwd = os.getcwd()
-        
-        try:
-            # Set up sys.argv like main.py expects
-            sys.argv = [sys.argv[0]]
-            
-            # Change to the script directory
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            os.chdir(script_dir)
-            
-            # Initialize exactly like main.py
-            from dotenv import load_dotenv
-            load_dotenv()
-            config = Config()
-            vc = VC(config)
-            vc.get_vc(MODEL_CONFIG[character]["model_path"])
-            models[character] = vc
-            
-            
-        except Exception as e:
-            raise
-        finally:
-            # Restore original argv and working directory
-            sys.argv = original_argv
-            os.chdir(original_cwd)
-            
-    return models[character]
 
-def load_whisper_model():
-    """Load the Whisper model for word-level timing if not already loaded"""
-    global whisper_model
-    
-    
-    if not WHISPER_AVAILABLE:
-        raise RuntimeError("whisper-timestamped is not installed. Install with: pip install whisper-timestamped")
-    
-    if whisper_model is None:
-        try:
-            # Use small model for balance of speed and accuracy
-            whisper_model = whisper.load_model("small", device="cpu")
-        except Exception as e:
-            raise e
-    return whisper_model
 
 async def generate_tts_audio(text: str, character: str, output_path: str) -> bool:
     """Generate TTS audio with fallback chain"""
