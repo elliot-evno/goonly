@@ -3,7 +3,7 @@ import tempfile
 import time
 import uuid
 from typing import List, Optional
-from ..video import ImageOverlay
+from .types import ImageOverlay
 
 def write_subtitle_file(subtitle_content: str) -> str:
     """Write subtitle content to a temporary file and return the path"""

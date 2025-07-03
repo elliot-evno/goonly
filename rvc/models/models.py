@@ -23,19 +23,37 @@ def load_model(character: str):
             # Set up sys.argv like main.py expects
             sys.argv = [sys.argv[0]]
             
-            # Change to the script directory
+            # Change to the RVC directory where configs are located
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            os.chdir(script_dir)
+            rvc_dir = os.path.join(script_dir, "..", "rvc")
+            os.chdir(rvc_dir)
             
+            # Set up environment variables for RVC
+            assets_dir = os.path.join(os.getcwd(), "assets")
+            os.environ["weight_root"] = os.path.join(assets_dir, "weights")
+            os.environ["index_root"] = os.path.join(assets_dir, "weights") 
+            os.environ["rmvpe_root"] = os.path.join(assets_dir, "rmvpe")
+            
+            print(f"Loading model {character}...")
+            print(f"Working directory: {os.getcwd()}")
+            print(f"Weight root: {os.environ.get('weight_root')}")
+            print(f"Model path: {MODEL_CONFIG[character]['model_path']}")
 
             load_dotenv()
             config = Config()
+            print(f"Using device: {config.device}")
+            print(f"Half precision: {config.is_half}")
+            
             vc = VC(config)
             vc.get_vc(MODEL_CONFIG[character]["model_path"])
             models[character] = vc
+            print(f"Successfully loaded model {character}")
             
             
         except Exception as e:
+            print(f"Error loading model {character}: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
             raise
         finally:
             # Restore original argv and working directory

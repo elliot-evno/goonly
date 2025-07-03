@@ -20,8 +20,20 @@ def get_index_path_from_model(sid):
 
 
 def load_hubert(config):
+    # Get the absolute path to the hubert model
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Navigate up to the rvc directory and then to assets
+    rvc_dir = os.path.join(script_dir, "..", "..", "..")
+    hubert_path = os.path.join(rvc_dir, "assets", "hubert", "hubert_base.pt")
+    hubert_path = os.path.abspath(hubert_path)
+    
+    print(f"Loading Hubert model from: {hubert_path}")
+    
+    if not os.path.exists(hubert_path):
+        raise FileNotFoundError(f"Hubert model not found at: {hubert_path}")
+    
     models, _, _ = checkpoint_utils.load_model_ensemble_and_task(
-        ["assets/hubert/hubert_base.pt"],
+        [hubert_path],
         suffix="",
     )
     hubert_model = models[0]

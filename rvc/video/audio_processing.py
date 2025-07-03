@@ -3,8 +3,9 @@ import tempfile
 import subprocess
 import uuid
 import asyncio
+import time
 from typing import List
-from ..video import AudioFileData
+from .types import AudioFileData
 
 async def combine_audio_buffers(audio_data: List[AudioFileData]) -> bytes:
     """Combine multiple audio buffers into a single WAV file"""

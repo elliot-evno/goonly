@@ -1,5 +1,5 @@
 from typing import List, Optional
-from ..video import ImageOverlay
+from .types import ImageOverlay
 
 def build_ffmpeg_inputs(video_path: str, stewie_image_path: str, peter_image_path: str, 
                        combined_audio_path: str, duration: float, overlay_temp_files: List[str]) -> List[str]:
@@ -60,7 +60,8 @@ def build_filter_complex(stewie_overlay: str, peter_overlay: str, image_overlays
     filter_parts.append(
         f"[{final_input}]subtitles='{subtitle_path}':"
         f"force_style='FontName=Arial Black,Fontsize=140,PrimaryColour=&H00FFFFFF,"
-        f"BorderStyle=1,Outline=8,Shadow=3,Alignment=8,MarginV=200'[final]"
+        f"BorderStyle=1,Outline=8,Shadow=3,Alignment=2,MarginV=1000'[final]"
+
     )
     
     return ';'.join(filter_parts)

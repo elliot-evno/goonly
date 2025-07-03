@@ -5,11 +5,11 @@ import uuid
 import asyncio
 from typing import List, Optional
 
-from rvc.video.types import AudioFileData, CharacterTimeline, ImageOverlay, VideoConfig
-from rvc.video.audio_processing import write_combined_audio_file
-from rvc.video.file_utils import write_subtitle_file, write_image_overlay_files, cleanup_temp_files
-from rvc.video.video_effects import create_character_overlay_expressions
-from rvc.video.ffmpeg_utils import build_ffmpeg_inputs, build_filter_complex, build_ffmpeg_command
+from video.types import AudioFileData, CharacterTimeline, ImageOverlay, VideoConfig
+from video.audio_processing import write_combined_audio_file
+from video.file_utils import write_subtitle_file, write_image_overlay_files, cleanup_temp_files
+from video.video_effects import create_character_overlay_expressions
+from video.ffmpeg_utils import build_ffmpeg_inputs, build_filter_complex, build_ffmpeg_command
 
 async def create_final_video_with_buffers(
     video_path: str,

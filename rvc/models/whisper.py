@@ -2,7 +2,7 @@ import os
 import tempfile
 import uuid
 from fastapi import HTTPException, File, Form, UploadFile
-from rvc.models.models import *
+from config import whisper_model
 
 
 try: 
@@ -68,7 +68,7 @@ async def whisper_timestamped_endpoint(
             # Use whisper-timestamped's transcribe function (not transcribe_timestamped)
             # The API is: whisper.transcribe(model, audio, **kwargs)
             result = whisper.transcribe(
-                whisper_model, 
+                model, 
                 audio_data,
                 language="en",  # You can make this configurable
                 verbose=False
