@@ -21,13 +21,23 @@ def build_ffmpeg_inputs(video_path: str, stewie_image_path: str, peter_image_pat
 def build_filter_complex(stewie_overlay: str, peter_overlay: str, image_overlays: Optional[List[ImageOverlay]], 
                         overlay_temp_files: List[str], subtitle_path: str) -> str:
     """Build the filter complex string for FFmpeg"""
-    # Create image scaling filters
-    image_filter_chain = []
+    # Create media scaling filters
+    media_filter_chain = []
     if image_overlays:
         for i in range(len(image_overlays)):
             input_index = 4 + i  # Starting from input index 4
-            scaled_label = f"img_{i}_scaled"
-            image_filter_chain.append(f"[{input_index}:v]scale=600:-1[{scaled_label}]")
+            scaled_label = f"media_{i}_scaled"
+            overlay = image_overlays[i]
+            
+            if overlay.media_type == "video":
+                # For videos, scale and loop if necessary
+                media_filter_chain.append(
+                    f"[{input_index}:v]scale=600:-1:force_original_aspect_ratio=decrease,"
+                    f"pad=600:600:(ow-iw)/2:(oh-ih)/2,loop=loop=-1:size=1:start=0[{scaled_label}]"
+                )
+            else:
+                # For images, just scale
+                media_filter_chain.append(f"[{input_index}:v]scale=600:-1[{scaled_label}]")
     
     # Build main filter chain
     filter_parts = [
@@ -40,15 +50,15 @@ def build_filter_complex(stewie_overlay: str, peter_overlay: str, image_overlays
         f"[with_stewie][peter_img]overlay=-300:H-h-30:enable='{peter_overlay}'[with_characters]",
     ]
     
-    # Add image scaling
-    filter_parts.extend(image_filter_chain)
+    # Add media scaling
+    filter_parts.extend(media_filter_chain)
     
-    # Add image overlays
+    # Add media overlays
     if image_overlays:
         for i, overlay in enumerate(image_overlays):
             input_label = 'with_characters' if i == 0 else f'with_overlay_{i-1}'
             output_label = 'with_overlays' if i == len(image_overlays) - 1 else f'with_overlay_{i}'
-            scaled_label = f'img_{i}_scaled'
+            scaled_label = f'media_{i}_scaled'
             overlay_enable = f"between(t,{overlay.start_time},{overlay.end_time})"
             
             filter_parts.append(

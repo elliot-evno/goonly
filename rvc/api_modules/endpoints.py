@@ -129,7 +129,7 @@ async def process_video_from_conversation(request: VideoRequest):
         )
         
         # Process image overlays
-        image_overlays_list = create_image_overlays(conversation, media_buffers, total_duration)
+        image_overlays_list = create_image_overlays(conversation, media_buffers, word_timeline)
         
         # Generate video
         video_buffer = await generate_video(

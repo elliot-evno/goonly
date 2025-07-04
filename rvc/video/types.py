@@ -19,6 +19,7 @@ class ImageOverlay:
     start_time: float
     end_time: float
     description: str
+    media_type: str = "image"  # "image" or "video"
 
 @dataclass
 class SubtitleConfig:

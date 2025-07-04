@@ -31,16 +31,19 @@ export async function POST(request: Request) {
 
     const mediaSection = data.mediaFiles && data.mediaFiles.length > 0 ? `
       
-      IMPORTANT: I have provided ${data.mediaFiles.length} image(s).
-      You MUST include imageOverlays data for each image showing when it should appear in the video.
+      IMPORTANT: I have provided ${data.mediaFiles.length} media file(s) (images and/or videos).
+      You MUST include imageOverlays data for each media file showing when it should appear in the video.
       
-      For each uploaded image:
-      1. Look at what the image shows
-      2. Peter should NEVER mention or reference the images in his dialogue
-      3. The images should appear automatically at relevant moments through imageOverlays timing
+      For each uploaded media file:
+      1. Look at what the image/video shows
+      2. Peter should NEVER mention or reference the media files in his dialogue
+      3. The media should appear automatically at relevant moments through imageOverlays timing
       4. Use the exact filename provided
+      5. Use "triggerWord" to specify which word should trigger the media appearance
+      6. For videos: do NOT specify duration (they will play their full length)
+      7. For images: specify duration (usually 2-5 seconds)
       
-      Available images: ${data.mediaFiles.map(f => f.filename).join(', ')}
+      Available media files: ${data.mediaFiles.map(f => `${f.filename} (${f.type})`).join(', ')}
       
       REQUIRED: Include imageOverlays array in at least one conversation turn.
     ` : '';
@@ -59,22 +62,22 @@ export async function POST(request: Request) {
       
       Format the response as a JSON array of conversation turns, where each turn has "stewie" and "peter" keys.
       ${data.mediaFiles && data.mediaFiles.length > 0 ? 
-        'MANDATORY: Since images were uploaded, you MUST include "imageOverlays" array in the conversation turns. Peter should never mention the images in his dialogue - they will appear automatically through the overlay timing.' : 
-        'If you reference uploaded images in the conversation, also include an "imageOverlays" array with timing information.'
+        'MANDATORY: Since media files were uploaded, you MUST include "imageOverlays" array in the conversation turns. Peter should never mention the media in his dialogue - they will appear automatically through the overlay timing.' : 
+        'If you reference uploaded media in the conversation, also include an "imageOverlays" array with timing information.'
       }
       
       ${data.mediaFiles && data.mediaFiles.length > 0 ? 
-        `Example format (REQUIRED when images are uploaded):
+        `Example format (REQUIRED when media files are uploaded):
         [
           {
             "stewie": "How does this work?", 
-            "peter": "Well, it works by making things better and easier to use...",
+            "peter": "Well, it works by making things better and easier to use for everyone...",
             "imageOverlays": [
               {
                 "filename": "${data.mediaFiles[0].filename}",
-                "startTime": 1.0,
-                "duration": 4.0,
-                "description": "Shows relevant image during Peter's explanation"
+                "triggerWord": "easier",
+                "duration": ${data.mediaFiles[0].type === 'video' ? 'null' : '4.0'},
+                "description": "Shows relevant ${data.mediaFiles[0].type} when Peter says 'easier'"
               }
             ]
           },
@@ -88,9 +91,9 @@ export async function POST(request: Request) {
             "imageOverlays": [
               {
                 "filename": "example.jpg",
-                "startTime": 2.5,
+                "triggerWord": "this",
                 "duration": 3.0,
-                "description": "Shows when Peter mentions the example"
+                "description": "Shows when Peter says the word 'this'"
               }
             ]
           },
@@ -99,12 +102,17 @@ export async function POST(request: Request) {
       }
       
       For imageOverlays:
-      - startTime: seconds from the beginning of that conversation turn when image should appear
-      - duration: how long in seconds the image should be visible
-      - filename: exact filename of the uploaded image to show
-      - description: brief explanation of why this image is shown at this moment
+      - triggerWord: the exact word from Peter or Stewie's dialogue that should trigger the media to appear
+      - duration: how long in seconds the IMAGE should be visible (2-5 seconds). For VIDEOS, set this to null or omit it entirely
+      - filename: exact filename of the uploaded media file to show
+      - description: brief explanation of why this media is shown at this word
       
-      IMPORTANT: Peter should never say things like "look at this image", "as you can see here", or reference images in any way in his dialogue.
+      IMPORTANT: 
+      - Peter should never say things like "look at this image", "watch this video", "as you can see here", or reference media in any way in his dialogue.
+      - The triggerWord must be an exact word that appears in either Peter or Stewie's dialogue
+      - Choose trigger words that are relevant to when the media should appear
+      - For videos: they will play their full length automatically, so don't specify duration
+      - For images: always specify a duration between 2-5 seconds
       
       Avoid making family guy references, and try to just make so that Peter gives a good answer to Stewie's question using funny examples. 
      Both Stewie and Peter should use simple terms and words. Their sentences should be brief and stewie should start with a question on the topic.
@@ -129,6 +137,7 @@ export async function POST(request: Request) {
             }
           });
         }
+        // Note: Gemini doesn't support video input yet, but we include the filename for AI awareness
       }
     }
     
@@ -167,7 +176,7 @@ export async function POST(request: Request) {
       if (data.mediaFiles && data.mediaFiles.length > 0) {
         const hasImageOverlays = conversation.some(turn => turn.imageOverlays && turn.imageOverlays.length > 0);
         if (!hasImageOverlays) {
-          console.log('⚠️ WARNING: Images were uploaded but no imageOverlays found in conversation');
+          console.log('⚠️ WARNING: Media files were uploaded but no imageOverlays found in conversation');
         }
       }
       
