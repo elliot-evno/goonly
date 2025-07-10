@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  rvc-api:
+    build:
+      context: .
+      target: development  # If using multi-stage build
+    volumes:
+      # Mount source code for hot reload during development
+      - .:/app
+      - /app/rvc_env  # Exclude virtual environment
+    environment:
+      - DEBUG=1
+    command: ["dev"]  # Use development mode from entrypoint
+    ports:
+      - "8000:8000"
+      - "8001:8001"  # Additional debug port if needed 

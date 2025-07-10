@@ -1,0 +1,62 @@
+# Virtual environments
+rvc_env/
+venv/
+env/
+.env.local
+.env.*.local
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+*.egg-info/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+.cache/
+
+# Documentation
+README.md
+*.md
+docs/
+
+# Windows batch files (not needed in Linux container)
+*.bat
+
+# Cloudflare config (not needed in container)
+cloudflare.bat
+
+# Build artifacts
+build/
+dist/
+
+# Large model files (should be mounted as volumes instead)
+# Uncomment if you want to exclude models from image
+# rvc/assets/weights/*.pth
+# rvc/assets/weights/*.index
+# rvc/assets/hubert/*.pt 

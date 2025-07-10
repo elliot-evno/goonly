@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  rvc-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: rvc-voice-api-gpu
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - PETER_VOICE_ID=${PETER_VOICE_ID}
+      - STEWIE_VOICE_ID=${STEWIE_VOICE_ID}
+      - PYTORCH_ENABLE_MPS_FALLBACK=1
+      - CUDA_VISIBLE_DEVICES=0
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount model assets (if you want to persist models outside container)
+      - ./rvc/assets:/app/rvc/assets:ro
+      # Mount temp directory for processing files
+      - ./temp:/app/temp
+      # Mount uploads directory if needed
+      - ./uploads:/app/uploads
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Resource limits (adjust based on your hardware)
+    deploy:
+      resources:
+        limits:
+          memory: 8G  # Increased for GPU workloads
+        reservations:
+          memory: 4G
+    # GPU reservation
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+networks:
+  default:
+    driver: bridge 
