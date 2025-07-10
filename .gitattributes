@@ -15,6 +15,11 @@ rvc/rvc/assets/pretrained/* filter=lfs diff=lfs merge=lfs -text
 rvc/rvc/assets/pretrained_v2/* filter=lfs diff=lfs merge=lfs -text
 # UVR5 weights
 rvc/assets/uvr5_weights/* filter=lfs diff=lfs merge=lfs -text
+# Public content files
+public/content/*.mp4 filter=lfs diff=lfs merge=lfs -text
+public/content/*.png filter=lfs diff=lfs merge=lfs -text
+public/content/*.jpg filter=lfs diff=lfs merge=lfs -text
+# General patterns
 *.pth filter=lfs diff=lfs merge=lfs -text
 *.index filter=lfs diff=lfs merge=lfs -text
 *.pt filter=lfs diff=lfs merge=lfs -text
