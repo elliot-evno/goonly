@@ -99,15 +99,20 @@ async def process_conversation_audio(conversation, request_id: str) -> tuple[Lis
     audio_tasks = []
     
     for turn in conversation:
-        audio_tasks.append({"text": turn.stewie, "character": "stewie"})
-        audio_tasks.append({"text": turn.peter, "character": "peter"})
+        if turn.stewie and turn.stewie.strip():
+            audio_tasks.append({"text": turn.stewie, "character": "stewie"})
+        if turn.peter and turn.peter.strip():
+            audio_tasks.append({"text": turn.peter, "character": "peter"})
     
-    # Process audio generation with RVC in parallel
-    print(f"[{request_id}] Generating {len(audio_tasks)} audio files in parallel...")
-    audio_results = await asyncio.gather(
-        *[generate_audio_for_text(task["text"], task["character"], request_id) 
-          for task in audio_tasks]
-    )
+    print(f"[{request_id}] Found {len(audio_tasks)} non-empty audio tasks")
+    
+    # Process audio generation sequentially (as per the original implementation)
+    print(f"[{request_id}] Generating {len(audio_tasks)} audio files sequentially...")
+    audio_results = []
+    for i, task in enumerate(audio_tasks):
+        print(f"[{request_id}] Processing audio {i+1}/{len(audio_tasks)} ({task['character']})")
+        result = await generate_audio_for_text(task["text"], task["character"], request_id)
+        audio_results.append(result)
     print(f"[{request_id}] All audio generation completed")
     
     # Build timeline
@@ -171,6 +176,6 @@ async def process_conversation_audio(conversation, request_id: str) -> tuple[Lis
         
         current_time += audio["duration"] + GAP_DURATION
     
-    total_duration = current_time - GAP_DURATION + 1
+    total_duration = current_time - GAP_DURATION + 1 if current_time > 0 else 1
     
     return audio_data_list, character_timeline_list, word_timeline, total_duration 

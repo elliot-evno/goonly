@@ -1,6 +1,8 @@
 import tempfile
 import uuid
 import os
+import traceback
+import logging
 from fastapi import Form, HTTPException, File, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from scipy.io import wavfile
@@ -19,6 +21,10 @@ from .video_service import (
     generate_video,
     save_video_to_temp
 )
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 async def tts_endpoint(text: str = Form(...), character: str = Form("peter")):
     """Generate TTS with RVC voice conversion"""
@@ -108,30 +114,53 @@ async def get_characters():
 async def process_video_from_conversation(request: VideoRequest):
     """Process video from conversation data - matches Next.js frontend expectations"""
     request_id = str(uuid.uuid4())[:8]
+    logger.info(f"[{request_id}] Starting video processing")
     print(f"[{request_id}] Processing video from conversation")
     
-    conversation = request.conversation
-    media_files = request.mediaFiles or []
-    
-    if not conversation:
-        raise HTTPException(status_code=400, detail="No conversation provided")
-    
     try:
+        # Log request details
+        logger.info(f"[{request_id}] Conversation length: {len(request.conversation) if request.conversation else 0}")
+        logger.info(f"[{request_id}] Media files count: {len(request.mediaFiles) if request.mediaFiles else 0}")
+        
+        conversation = request.conversation
+        media_files = request.mediaFiles or []
+        
+        if not conversation:
+            logger.error(f"[{request_id}] No conversation provided")
+            raise HTTPException(status_code=400, detail="No conversation provided")
+        
+        # Log conversation details
+        for i, turn in enumerate(conversation):
+            peter_text = turn.peter if turn.peter else "(silence)"
+            stewie_text = turn.stewie if turn.stewie else "(silence)"
+            logger.info(f"[{request_id}] Turn {i}: peter='{peter_text[:50]}...', stewie='{stewie_text[:50]}...'")
+        
         # Validate file paths
+        logger.info(f"[{request_id}] Validating file paths...")
         video_path, stewie_image_path, peter_image_path = validate_file_paths()
+        logger.info(f"[{request_id}] File paths validated successfully")
         
         # Process media files
+        logger.info(f"[{request_id}] Processing media files...")
         media_buffers = process_media_files(media_files)
+        logger.info(f"[{request_id}] Processed {len(media_buffers)} media files")
         
         # Process conversation audio
+        logger.info(f"[{request_id}] Processing conversation audio...")
         audio_data_list, character_timeline_list, word_timeline, total_duration = await process_conversation_audio(
             conversation, request_id
         )
+        logger.info(f"[{request_id}] Audio processing complete. Total duration: {total_duration}s")
+        logger.info(f"[{request_id}] Generated {len(audio_data_list)} audio files")
+        logger.info(f"[{request_id}] Word timeline entries: {len(word_timeline)}")
         
         # Process image overlays
+        logger.info(f"[{request_id}] Creating image overlays...")
         image_overlays_list = create_image_overlays(conversation, media_buffers, word_timeline)
+        logger.info(f"[{request_id}] Created {len(image_overlays_list) if image_overlays_list else 0} image overlays")
         
         # Generate video
+        logger.info(f"[{request_id}] Starting video generation...")
         video_buffer = await generate_video(
             video_path,
             stewie_image_path,
@@ -142,24 +171,33 @@ async def process_video_from_conversation(request: VideoRequest):
             total_duration,
             image_overlays_list if image_overlays_list else None
         )
-        
+        logger.info(f"[{request_id}] Video generation completed. Buffer size: {len(video_buffer) / (1024*1024):.1f} MB")
         print(f"[{request_id}] Video generation completed")
         
         # Save to temp file for streaming
+        logger.info(f"[{request_id}] Saving video to temp file...")
         temp_video_path, file_size = save_video_to_temp(video_buffer, request_id)
+        logger.info(f"[{request_id}] Video saved to: {temp_video_path}")
+        logger.info(f"[{request_id}] Video file size: {file_size / (1024*1024):.1f} MB")
         print(f"[{request_id}] Video file size: {file_size / (1024*1024):.1f} MB")
         
         # Stream response with chunks
         def iterfile():
-            with open(temp_video_path, 'rb') as f:
-                while chunk := f.read(1024 * 1024):  # 1MB chunks
-                    yield chunk
-            # Cleanup after streaming
             try:
-                os.unlink(temp_video_path)
-            except:
-                pass
+                with open(temp_video_path, 'rb') as f:
+                    while chunk := f.read(1024 * 1024):  # 1MB chunks
+                        yield chunk
+            except Exception as e:
+                logger.error(f"[{request_id}] Error during streaming: {str(e)}")
+            finally:
+                # Cleanup after streaming
+                try:
+                    os.unlink(temp_video_path)
+                    logger.info(f"[{request_id}] Temp file cleaned up")
+                except Exception as e:
+                    logger.warning(f"[{request_id}] Failed to cleanup temp file: {str(e)}")
         
+        logger.info(f"[{request_id}] Returning streaming response")
         return StreamingResponse(
             iterfile(),
             media_type="video/mp4",
@@ -169,9 +207,16 @@ async def process_video_from_conversation(request: VideoRequest):
             }
         )
         
+    except HTTPException as e:
+        logger.error(f"[{request_id}] HTTP Exception: {e.detail}")
+        print(f"[{request_id}] Error: {e.detail}")
+        raise
     except Exception as e:
+        logger.error(f"[{request_id}] Unexpected error: {str(e)}")
+        logger.error(f"[{request_id}] Traceback: {traceback.format_exc()}")
         print(f"[{request_id}] Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[{request_id}] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 async def whisper_timestamped_handler(
     audio: UploadFile = File(...),

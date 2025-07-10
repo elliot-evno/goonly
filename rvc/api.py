@@ -11,6 +11,7 @@ logging.getLogger("fairseq.models.hubert.hubert").setLevel(logging.ERROR)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 # Import endpoint handlers
 from api_modules.endpoints import (
@@ -21,8 +22,30 @@ from api_modules.endpoints import (
     whisper_timestamped_handler
 )
 from api_modules.models import VideoRequest
+from models.models import preload_all_models
 
-app = FastAPI(title="RVC TTS API", version="1.0.0")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting up RVC API...")
+    try:
+        # Preload models to avoid loading during requests
+        preload_all_models()
+        logger.info("Models preloaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to preload models: {str(e)}")
+        logger.warning("API will start but model loading may fail during requests")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down RVC API...")
+
+app = FastAPI(title="RVC TTS API", version="1.0.0", lifespan=lifespan)
 
 # Add CORS middleware - include your production domain when deploying
 app.add_middleware(
