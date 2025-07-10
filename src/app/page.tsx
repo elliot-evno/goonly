@@ -54,7 +54,18 @@ export default function HomePage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Reset both videos
+    // Check which videos have topics filled
+    const shouldGenerate1 = video1.topic.trim();
+    const shouldGenerate2 = video2.topic.trim();
+    
+    if (!shouldGenerate1 && !shouldGenerate2) {
+      // If neither has a topic, show error on both
+      updateVideoState(1, { error: 'Please enter a topic' });
+      updateVideoState(2, { error: 'Please enter a topic' });
+      return;
+    }
+    
+    // Reset only the videos that will be generated
     const resetState = {
       conversation: [],
       videoUrl: null,
@@ -62,18 +73,27 @@ export default function HomePage() {
       error: ''
     };
     
-    setVideo1(prev => ({ ...prev, ...resetState }));
-    setVideo2(prev => ({ ...prev, ...resetState }));
+    if (shouldGenerate1) {
+      setVideo1(prev => ({ ...prev, ...resetState }));
+    }
+    if (shouldGenerate2) {
+      setVideo2(prev => ({ ...prev, ...resetState }));
+    }
     
-    // Start both video generations simultaneously
-    const promise1 = generateVideoComplete(1);
-    const promise2 = generateVideoComplete(2);
+    // Start video generations for filled prompts
+    const promises = [];
+    if (shouldGenerate1) {
+      promises.push(generateVideoComplete(1));
+    }
+    if (shouldGenerate2) {
+      promises.push(generateVideoComplete(2));
+    }
     
-    // Wait for both to complete (or fail)
+    // Wait for all to complete (or fail)
     try {
-      await Promise.allSettled([promise1, promise2]);
+      await Promise.allSettled(promises);
     } catch (err) {
-      console.error('Error in parallel video generation:', err);
+      console.error('Error in video generation:', err);
     }
   };
 
@@ -236,6 +256,57 @@ export default function HomePage() {
     a.click();
   };
 
+  const downloadBothVideos = async () => {
+    if (!video1.videoUrl && !video2.videoUrl) return;
+    
+    // Dynamic import of JSZip to avoid SSR issues
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+    
+    const timestamp = Date.now();
+    const promises = [];
+    
+    // Add video 1 if it exists
+    if (video1.videoUrl && video1.topic.trim()) {
+      const filename1 = `peter-stewie-${video1.topic.replace(/\s+/g, '-').toLowerCase()}-video1-${timestamp}.mp4`;
+      promises.push(
+        fetch(video1.videoUrl)
+          .then(response => response.blob())
+          .then(blob => zip.file(filename1, blob))
+      );
+    }
+    
+    // Add video 2 if it exists
+    if (video2.videoUrl && video2.topic.trim()) {
+      const filename2 = `peter-stewie-${video2.topic.replace(/\s+/g, '-').toLowerCase()}-video2-${timestamp}.mp4`;
+      promises.push(
+        fetch(video2.videoUrl)
+          .then(response => response.blob())
+          .then(blob => zip.file(filename2, blob))
+      );
+    }
+    
+    try {
+      // Wait for all videos to be added to the zip
+      await Promise.all(promises);
+      
+      // Generate the zip file
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      
+      // Download the zip file
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(zipBlob);
+      a.download = `peter-stewie-videos-${timestamp}.zip`;
+      a.click();
+      
+      // Clean up the object URL
+      setTimeout(() => URL.revokeObjectURL(a.href), 100);
+    } catch (error) {
+      console.error('Error creating zip file:', error);
+      alert('Failed to create zip file. Please try downloading videos individually.');
+    }
+  };
+
   const retryGeneration = (videoNum: 1 | 2) => {
     updateVideoState(videoNum, {
       error: '',
@@ -334,7 +405,6 @@ export default function HomePage() {
           onChange={(e) => updateVideoState(videoNum, { topic: e.target.value })}
           placeholder={`Enter topic for video ${videoNum} (e.g. 'Cuda', 'Bitcoin', 'Pizza')...`}
           className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          required
           disabled={isAnyGenerating}
         />
         
@@ -556,14 +626,28 @@ export default function HomePage() {
             disabled={isAnyGenerating || (!video1.topic.trim() && !video2.topic.trim())}
             className="px-8 py-4 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:bg-blue-300 text-lg font-semibold"
           >
-            {isAnyGenerating ? 'Generating Videos...' : 'Generate Both Videos Simultaneously'}
+            {isAnyGenerating ? 'Generating Videos...' : 
+             (video1.topic.trim() && video2.topic.trim()) ? 'Generate Both Videos Simultaneously' :
+             'Generate Video'}
           </button>
         </div>
       </form>
 
-      {/* Create New Videos */}
+      {/* Download Both Videos and Create New Videos */}
       {(video1.videoUrl || video2.videoUrl) && (
-        <div className="w-full max-w-md">
+        <div className="w-full max-w-md space-y-4">
+          {/* Download Both Videos Button */}
+          {video1.videoUrl && video2.videoUrl && (
+            <button
+              onClick={downloadBothVideos}
+              className="w-full px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center space-x-2"
+            >
+              <span>📦</span>
+              <span>Download Both Videos (ZIP)</span>
+            </button>
+          )}
+          
+          {/* Create New Videos Button */}
           <button
             onClick={resetAll}
             className="w-full px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
@@ -576,8 +660,17 @@ export default function HomePage() {
       {/* Overall Progress Info */}
       {isAnyGenerating && (
         <div className="mt-8 text-gray-400 text-center">
-          <p>🚀 Videos are being generated in parallel for faster processing!</p>
-          <p className="text-sm">Powered by: Gemini AI, RVC Voice Cloning, Whisper Timing, FFmpeg</p>
+          {(video1.topic.trim() && video2.topic.trim()) ? (
+            <>
+              <p>🚀 Videos are being generated in parallel for faster processing!</p>
+              <p className="text-sm">Powered by: Gemini AI, RVC Voice Cloning, Whisper Timing, FFmpeg</p>
+            </>
+          ) : (
+            <>
+              <p>🎬 Generating your video...</p>
+              <p className="text-sm">Powered by: Gemini AI, RVC Voice Cloning, Whisper Timing, FFmpeg</p>
+            </>
+          )}
         </div>
       )}
     </div>
