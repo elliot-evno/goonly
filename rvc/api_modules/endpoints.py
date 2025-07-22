@@ -184,13 +184,12 @@ async def process_video_task(request: VideoRequest, request_id: str):
 
 async def process_video_from_conversation(request: VideoRequest):
     """Process video from conversation data with status tracking"""
-    request_id = str(uuid.uuid4())[:8]
-    logger.info(f"[{request_id}] Starting video processing")
     
     # Check if this is a status check request
-    if not request.conversation and request.requestId:
+    if request.isStatusCheck and request.requestId:
         if request.requestId in video_tasks:
             task_info = video_tasks[request.requestId]
+            logger.info(f"Status check for request {request.requestId}: {task_info['status']}")
             
             # If completed, return the video
             if task_info["status"] == "completed":
@@ -208,13 +207,13 @@ async def process_video_from_conversation(request: VideoRequest):
                             os.unlink(temp_video_path)
                             del video_tasks[request.requestId]
                         except Exception as e:
-                            logger.warning(f"[{request_id}] Cleanup error: {str(e)}")
+                            logger.warning(f"Cleanup error: {str(e)}")
                 
                 return StreamingResponse(
                     iterfile(),
                     media_type="video/mp4",
                     headers={
-                        "Content-Disposition": f'attachment; filename="peter-stewie-conversation_{request_id}.mp4"',
+                        "Content-Disposition": f'attachment; filename="peter-stewie-conversation_{request.requestId}.mp4"',
                         "Content-Length": str(file_size),
                     }
                 )
@@ -235,6 +234,12 @@ async def process_video_from_conversation(request: VideoRequest):
             raise HTTPException(status_code=404, detail="Video task not found")
     
     # This is a new video generation request
+    request_id = str(uuid.uuid4())[:8]
+    logger.info(f"[{request_id}] Starting new video processing request")
+    
+    if not request.conversation:
+        raise HTTPException(status_code=400, detail="No conversation provided for new video request")
+    
     video_tasks[request_id] = {
         "status": "initializing",
         "started_at": asyncio.get_event_loop().time()

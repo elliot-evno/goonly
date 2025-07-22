@@ -19,7 +19,12 @@ class MediaFile(BaseModel):
     filename: str
     type: str  # 'image' or 'video'
 
+class StatusCheckRequest(BaseModel):
+    requestId: str
+    isStatusCheck: bool = True
+
 class VideoRequest(BaseModel):
     conversation: Optional[List[ConversationTurn]] = None
     mediaFiles: Optional[List[MediaFile]] = None
-    requestId: Optional[str] = None  # For polling status 
+    requestId: Optional[str] = None  # For polling status
+    isStatusCheck: Optional[bool] = False  # To distinguish between new requests and status checks 
