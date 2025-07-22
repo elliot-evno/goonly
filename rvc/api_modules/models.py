@@ -9,10 +9,17 @@ class ImageOverlayData(BaseModel):
     description: Optional[str] = None
 
 class ConversationTurn(BaseModel):
-    stewie: str
-    peter: str
+    stewie: Optional[str] = None
+    peter: Optional[str] = None
     imageOverlays: Optional[List[ImageOverlayData]] = None
 
+class MediaFile(BaseModel):
+    data: str  # base64 encoded file data
+    mimeType: str
+    filename: str
+    type: str  # 'image' or 'video'
+
 class VideoRequest(BaseModel):
-    conversation: List[ConversationTurn]
-    mediaFiles: Optional[List[Dict[str, Any]]] = None 
+    conversation: Optional[List[ConversationTurn]] = None
+    mediaFiles: Optional[List[MediaFile]] = None
+    requestId: Optional[str] = None  # For polling status 

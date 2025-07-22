@@ -4,8 +4,10 @@ import os
 import traceback
 import logging
 from fastapi import Form, HTTPException, File, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from scipy.io import wavfile
+import asyncio
+from typing import Dict, Optional
 
 from models.models import load_model
 from config import MODEL_CONFIG, models
@@ -25,6 +27,9 @@ from .video_service import (
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Store video generation status
+video_tasks: Dict[str, Dict] = {}
 
 async def tts_endpoint(text: str = Form(...), character: str = Form("peter")):
     """Generate TTS with RVC voice conversion"""
@@ -111,13 +116,12 @@ async def get_characters():
     """Get available character voices"""
     return {"characters": list(MODEL_CONFIG.keys())}
 
-async def process_video_from_conversation(request: VideoRequest):
-    """Process video from conversation data - matches Next.js frontend expectations"""
-    request_id = str(uuid.uuid4())[:8]
-    logger.info(f"[{request_id}] Starting video processing")
-    print(f"[{request_id}] Processing video from conversation")
-    
+async def process_video_task(request: VideoRequest, request_id: str):
+    """Background task for video processing"""
     try:
+        # Update status
+        video_tasks[request_id]["status"] = "Processing conversation audio..."
+        
         # Log request details
         logger.info(f"[{request_id}] Conversation length: {len(request.conversation) if request.conversation else 0}")
         logger.info(f"[{request_id}] Media files count: {len(request.mediaFiles) if request.mediaFiles else 0}")
@@ -129,38 +133,26 @@ async def process_video_from_conversation(request: VideoRequest):
             logger.error(f"[{request_id}] No conversation provided")
             raise HTTPException(status_code=400, detail="No conversation provided")
         
-        # Log conversation details
-        for i, turn in enumerate(conversation):
-            peter_text = turn.peter if turn.peter else "(silence)"
-            stewie_text = turn.stewie if turn.stewie else "(silence)"
-            logger.info(f"[{request_id}] Turn {i}: peter='{peter_text[:50]}...', stewie='{stewie_text[:50]}...'")
-        
         # Validate file paths
         logger.info(f"[{request_id}] Validating file paths...")
         video_path, stewie_image_path, peter_image_path = validate_file_paths()
-        logger.info(f"[{request_id}] File paths validated successfully")
         
         # Process media files
-        logger.info(f"[{request_id}] Processing media files...")
+        video_tasks[request_id]["status"] = "Processing media files..."
         media_buffers = process_media_files(media_files)
-        logger.info(f"[{request_id}] Processed {len(media_buffers)} media files")
         
         # Process conversation audio
-        logger.info(f"[{request_id}] Processing conversation audio...")
+        video_tasks[request_id]["status"] = "Generating character voices..."
         audio_data_list, character_timeline_list, word_timeline, total_duration = await process_conversation_audio(
             conversation, request_id
         )
-        logger.info(f"[{request_id}] Audio processing complete. Total duration: {total_duration}s")
-        logger.info(f"[{request_id}] Generated {len(audio_data_list)} audio files")
-        logger.info(f"[{request_id}] Word timeline entries: {len(word_timeline)}")
         
         # Process image overlays
-        logger.info(f"[{request_id}] Creating image overlays...")
+        video_tasks[request_id]["status"] = "Creating image overlays..."
         image_overlays_list = create_image_overlays(conversation, media_buffers, word_timeline)
-        logger.info(f"[{request_id}] Created {len(image_overlays_list) if image_overlays_list else 0} image overlays")
         
         # Generate video
-        logger.info(f"[{request_id}] Starting video generation...")
+        video_tasks[request_id]["status"] = "Generating final video..."
         video_buffer = await generate_video(
             video_path,
             stewie_image_path,
@@ -171,52 +163,94 @@ async def process_video_from_conversation(request: VideoRequest):
             total_duration,
             image_overlays_list if image_overlays_list else None
         )
-        logger.info(f"[{request_id}] Video generation completed. Buffer size: {len(video_buffer) / (1024*1024):.1f} MB")
-        print(f"[{request_id}] Video generation completed")
         
-        # Save to temp file for streaming
-        logger.info(f"[{request_id}] Saving video to temp file...")
+        # Save to temp file
+        video_tasks[request_id]["status"] = "Saving video..."
         temp_video_path, file_size = save_video_to_temp(video_buffer, request_id)
-        logger.info(f"[{request_id}] Video saved to: {temp_video_path}")
-        logger.info(f"[{request_id}] Video file size: {file_size / (1024*1024):.1f} MB")
-        print(f"[{request_id}] Video file size: {file_size / (1024*1024):.1f} MB")
         
-        # Stream response with chunks
-        def iterfile():
-            try:
-                with open(temp_video_path, 'rb') as f:
-                    while chunk := f.read(1024 * 1024):  # 1MB chunks
-                        yield chunk
-            except Exception as e:
-                logger.error(f"[{request_id}] Error during streaming: {str(e)}")
-            finally:
-                # Cleanup after streaming
-                try:
-                    os.unlink(temp_video_path)
-                    logger.info(f"[{request_id}] Temp file cleaned up")
-                except Exception as e:
-                    logger.warning(f"[{request_id}] Failed to cleanup temp file: {str(e)}")
+        # Store result
+        video_tasks[request_id].update({
+            "status": "completed",
+            "file_path": temp_video_path,
+            "file_size": file_size
+        })
         
-        logger.info(f"[{request_id}] Returning streaming response")
-        return StreamingResponse(
-            iterfile(),
-            media_type="video/mp4",
-            headers={
-                "Content-Disposition": f'attachment; filename="peter-stewie-conversation_{request_id}.mp4"',
-                "Content-Length": str(file_size),
-            }
-        )
-        
-    except HTTPException as e:
-        logger.error(f"[{request_id}] HTTP Exception: {e.detail}")
-        print(f"[{request_id}] Error: {e.detail}")
-        raise
     except Exception as e:
-        logger.error(f"[{request_id}] Unexpected error: {str(e)}")
-        logger.error(f"[{request_id}] Traceback: {traceback.format_exc()}")
-        print(f"[{request_id}] Error: {str(e)}")
-        print(f"[{request_id}] Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"[{request_id}] Error in video processing: {str(e)}")
+        video_tasks[request_id].update({
+            "status": "error",
+            "error": str(e)
+        })
+
+async def process_video_from_conversation(request: VideoRequest):
+    """Process video from conversation data with status tracking"""
+    request_id = str(uuid.uuid4())[:8]
+    logger.info(f"[{request_id}] Starting video processing")
+    
+    # Check if this is a status check request
+    if not request.conversation and request.requestId:
+        if request.requestId in video_tasks:
+            task_info = video_tasks[request.requestId]
+            
+            # If completed, return the video
+            if task_info["status"] == "completed":
+                temp_video_path = task_info["file_path"]
+                file_size = task_info["file_size"]
+                
+                # Stream the video
+                def iterfile():
+                    try:
+                        with open(temp_video_path, 'rb') as f:
+                            while chunk := f.read(1024 * 1024):
+                                yield chunk
+                    finally:
+                        try:
+                            os.unlink(temp_video_path)
+                            del video_tasks[request.requestId]
+                        except Exception as e:
+                            logger.warning(f"[{request_id}] Cleanup error: {str(e)}")
+                
+                return StreamingResponse(
+                    iterfile(),
+                    media_type="video/mp4",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="peter-stewie-conversation_{request_id}.mp4"',
+                        "Content-Length": str(file_size),
+                    }
+                )
+            
+            # If error, return the error
+            elif task_info["status"] == "error":
+                error_msg = task_info.get("error", "Unknown error")
+                del video_tasks[request.requestId]
+                raise HTTPException(status_code=500, detail=error_msg)
+            
+            # If still processing, return status
+            else:
+                return JSONResponse(
+                    status_code=202,
+                    content={"status": task_info["status"]}
+                )
+        else:
+            raise HTTPException(status_code=404, detail="Video task not found")
+    
+    # This is a new video generation request
+    video_tasks[request_id] = {
+        "status": "initializing",
+        "started_at": asyncio.get_event_loop().time()
+    }
+    
+    # Start processing in background
+    asyncio.create_task(process_video_task(request, request_id))
+    
+    # Return immediate response with task ID
+    return JSONResponse(
+        status_code=202,
+        content={
+            "requestId": request_id,
+            "status": "initializing"
+        }
+    )
 
 async def whisper_timestamped_handler(
     audio: UploadFile = File(...),
